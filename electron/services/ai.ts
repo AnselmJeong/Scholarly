@@ -167,8 +167,7 @@ export interface ChatMessage {
 
 export async function chatWithPaper(
     contextText: string, 
-    messages: ChatMessage[],
-    onProgress?: (token: string) => void
+    messages: ChatMessage[]
 ): Promise<string> {
     
     // Truncate context if it's too large (conservative limit for 32k/8k models)
