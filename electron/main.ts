@@ -4,7 +4,7 @@ import path from 'node:path'
 import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
 import { extractText } from './services/pdf'
-import { extractKeywords, checkOllamaStatus, listModels, setModel } from './services/ai'
+import { extractKeywords, checkOllamaStatus, listModels, setModel, chatWithPaper } from './services/ai'
 import { articles, keywords, articleKeywords } from './db/schema'
 import { generateBibtexForArticles, searchCrossref } from './services/crossref'
 import { eq, and } from 'drizzle-orm'
@@ -655,6 +655,25 @@ app.whenReady().then(async () => {
     } catch (error) {
       console.error('BibTeX export error:', error);
       return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('chat-paper', async (_event, { filePath, messages }) => {
+    try {
+        console.log(`💬 Chat request for ${path.basename(filePath)}`);
+        
+        // 1. Extract text (cached or fresh)
+        // Note: extractText already caches somewhat by virtue of OS/FS, but we could improve this.
+        // For now, re-extracting is usually fast enough for text-based PDFs.
+        const text = await extractText(filePath);
+        
+        // 2. Send to LLM
+        const response = await chatWithPaper(text, messages);
+        
+        return { success: true, response };
+    } catch (error) {
+        console.error("Chat error:", error);
+        return { success: false, error: String(error) };
     }
   });
 });

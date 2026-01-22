@@ -159,3 +159,63 @@ export async function listModels(): Promise<string[]> {
     }
     return [];
 }
+
+export interface ChatMessage {
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+}
+
+export async function chatWithPaper(
+    contextText: string, 
+    messages: ChatMessage[],
+    onProgress?: (token: string) => void
+): Promise<string> {
+    
+    // Truncate context if it's too large (conservative limit for 32k/8k models)
+    // Keeping ~20k chars for context allows room for conversation
+    const truncatedContext = contextText.substring(0, 25000);
+
+    const systemPrompt = `You are an helpful academic research assistant. 
+    You have read the following academic paper. 
+    Answer the user's questions based ONLY on the content provided below.
+    If the answer is not in the text, say you don't know.
+    
+    --- PAPER CONTENT BEGINS ---
+    ${truncatedContext}
+    --- PAPER CONTENT ENDS ---
+    `;
+
+    // Construct full message history starting with system prompt
+    const fullMessages = [
+        { role: 'system', content: systemPrompt },
+        ...messages
+    ];
+
+    try {
+        console.log(`Sending chat request to Ollama (${modelName})...`);
+        const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: modelName,
+                messages: fullMessages,
+                stream: false, // For now, we'll do non-streaming for simplicity
+                options: {
+                    temperature: 0.3, // Slightly higher for more natural chat
+                    num_ctx: 32768    // Request larger context window if supported
+                }
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Ollama chat failed: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        return data.message?.content || "No response received.";
+
+    } catch (error) {
+        console.error("Error in chatWithPaper:", error);
+        throw error;
+    }
+}
