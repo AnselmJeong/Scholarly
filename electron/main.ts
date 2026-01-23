@@ -700,6 +700,8 @@ app.whenReady().then(async () => {
         // Note: extractText already caches somewhat by virtue of OS/FS, but we could improve this.
         // For now, re-extracting is usually fast enough for text-based PDFs.
         const text = await extractText(filePath);
+        console.log(`Debug: Extracted text length: ${text.length}`);
+        console.log(`Debug: Text preview: ${text.substring(0, 200)}...`);
         
         // 2. Send to LLM
         const response = await chatWithPaper(text, messages);

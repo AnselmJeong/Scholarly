@@ -31,9 +31,9 @@ export async function extractText(filePath: string): Promise<string> {
             console.error('pdf-parse failed:', e);
         }
 
-        // Last resort: just return filename as placeholder
-        console.warn(`Could not extract text from ${filePath}, using filename`);
-        return path.basename(filePath);
+        // Last resort: return empty string to indicate failure
+        console.warn(`Could not extract text from ${filePath} (all methods failed)`);
+        return "";
     } catch (error) {
         console.error(`Error extracting text from ${filePath}:`, error);
         throw error;

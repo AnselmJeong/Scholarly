@@ -40,7 +40,7 @@ function App() {
   const [links, setLinks] = useState<ArticleKeywordLink[]>([]);
   
   const [selectedArticleId, setSelectedArticleId] = useState<number | null>(null);
-  const [selectedKeywordId, setSelectedKeywordId] = useState<number | null>(-1);
+  const [selectedKeywordIds, setSelectedKeywordIds] = useState<number[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [rootPath, setRootPath] = useState<string | null>(null);
   const [articleKeywords, setArticleKeywords] = useState<string[]>([]);
@@ -123,12 +123,23 @@ function App() {
   const filteredArticles = useMemo(() => {
     let result = articles;
 
-    // 1. Keyword Filter
-    if (selectedKeywordId && selectedKeywordId !== -1) {
-        const linkedArticleIds = links
-          .filter(l => l.keywordId === selectedKeywordId)
-          .map(l => l.articleId);
-        result = result.filter(a => linkedArticleIds.includes(a.id));
+    // 1. Multi-Keyword Filter (AND Logic)
+    if (selectedKeywordIds.length > 0) {
+        // Group links by articleId for easier lookup
+        const articleKeywordMap = new Map<number, Set<number>>();
+        links.forEach(l => {
+            if (!articleKeywordMap.has(l.articleId)) {
+                articleKeywordMap.set(l.articleId, new Set());
+            }
+            articleKeywordMap.get(l.articleId)?.add(l.keywordId);
+        });
+
+        result = result.filter(a => {
+            const articleKws = articleKeywordMap.get(a.id);
+            if (!articleKws) return false;
+            // Check if article has ALL selected keyword IDs
+            return selectedKeywordIds.every(id => articleKws.has(id));
+        });
     }
 
     // 2. Filename Search Filter
@@ -141,7 +152,7 @@ function App() {
     }
     
     return result;
-  }, [articles, links, selectedKeywordId, filenameFilter]);
+  }, [articles, links, selectedKeywordIds, filenameFilter]);
 
   const filteredKeywords = useMemo(() => {
     const currentArticleIds = filteredArticles.map(a => a.id);
@@ -163,8 +174,16 @@ function App() {
 
   }, [keywords, links, filteredArticles]);
 
-  // --- Handlers ---
-
+  const handleSelectKeyword = (id: number) => {
+      setSelectedKeywordIds(prev => {
+          if (id === -1) return []; // Reset
+          if (prev.includes(id)) {
+              return prev.filter(k => k !== id); // Remove
+          }
+          return [...prev, id]; // Add
+      });
+      setSelectedArticleId(null);
+  };
   const handlePruneOrphans = async () => {
     if (confirm("This will remove all records from the database for files that no longer exist in the watched folders. Continue?")) {
         try {
@@ -230,7 +249,10 @@ function App() {
     if (filteredArticles.length === 0) return;
     
     const filePaths = filteredArticles.map(a => a.filePath);
-    const keywordName = keywords.find(k => k.id === selectedKeywordId)?.keyword || 'all';
+    const keywordName = selectedKeywordIds.length === 1 
+        ? keywords.find(k => k.id === selectedKeywordIds[0])?.keyword 
+        : (selectedKeywordIds.length > 1 ? 'multi-selected' : 'all');
+        
     const zipName = `articles-${keywordName}-${new Date().toISOString().split('T')[0]}.zip`;
 
     const result = await window.ipcRenderer.invoke('export-to-zip', { filePaths, zipName });
@@ -341,11 +363,8 @@ function App() {
          leftPanel={
            <Sidebar 
              keywords={filteredKeywords} 
-             selectedKeywordId={selectedKeywordId} 
-             onSelectKeyword={(id) => {
-               setSelectedKeywordId(id);
-               setSelectedArticleId(null);
-             }}
+             selectedKeywordIds={selectedKeywordIds} 
+             onSelectKeyword={handleSelectKeyword}
              onSelectRootFolder={handleSelectRoot}
              onOpenSettings={() => setIsSettingsOpen(true)}
              rootPath={rootPath}

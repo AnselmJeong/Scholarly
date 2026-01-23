@@ -5,13 +5,13 @@ interface SidebarProps {
   className?: string;
   keywords: { id: number, keyword: string, count: number }[];
   onSelectKeyword: (keywordId: number) => void;
-  selectedKeywordId: number | null;
+  selectedKeywordIds: number[];
   onSelectRootFolder?: () => void;
   onOpenSettings?: () => void;
   rootPath?: string | null;
 }
 
-export function Sidebar({ className, keywords, onSelectKeyword, selectedKeywordId, onSelectRootFolder, onOpenSettings, rootPath }: SidebarProps) {
+export function Sidebar({ className, keywords, onSelectKeyword, selectedKeywordIds, onSelectRootFolder, onOpenSettings, rootPath }: SidebarProps) {
   const [filterText, setFilterText] = useState('');
 
   const filteredKeywords = keywords.filter(k => 
@@ -61,7 +61,7 @@ export function Sidebar({ className, keywords, onSelectKeyword, selectedKeywordI
               <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                 Keywords ({filteredKeywords.length})
               </h2>
-              {(selectedKeywordId !== -1 || filterText !== '') && (
+              {(selectedKeywordIds.length > 0 || filterText !== '') && (
                 <button 
                   onClick={() => {
                       onSelectKeyword(-1);
@@ -89,7 +89,7 @@ export function Sidebar({ className, keywords, onSelectKeyword, selectedKeywordI
                 onClick={() => onSelectKeyword(k.id)}
                 className={cn(
                   "w-full text-left px-3 py-1.5 rounded-lg text-sm flex items-center justify-between group transition-all duration-200",
-                  selectedKeywordId === k.id 
+                  selectedKeywordIds.includes(k.id) 
                     ? "bg-gradient-to-r from-blue-600/30 to-purple-600/30 text-white border border-blue-500/30" 
                     : "hover:bg-slate-800/50 text-slate-400 hover:text-slate-200"
                 )}

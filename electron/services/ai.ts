@@ -171,10 +171,11 @@ export async function chatWithPaper(
 ): Promise<string> {
     
     // Truncate context if it's too large (conservative limit for 32k/8k models)
-    // Keeping ~20k chars for context allows room for conversation
-    const truncatedContext = contextText.substring(0, 25000);
+    // Increased to 120,000 chars (~30k tokens) to capture full papers
+    const truncatedContext = contextText.substring(0, 120000);
 
-    const systemPrompt = `You are an helpful academic research assistant. 
+    const systemPrompt = truncatedContext.trim().length > 0 
+    ? `You are an helpful academic research assistant. 
     You have read the following academic paper. 
     Answer the user's questions based ONLY on the content provided below.
     If the answer is not in the text, say you don't know.
@@ -184,7 +185,12 @@ export async function chatWithPaper(
     --- PAPER CONTENT BEGINS ---
     ${truncatedContext}
     --- PAPER CONTENT ENDS ---
-    `;
+    `
+    : `You are an helpful academic research assistant.
+    However, the content of the academic paper could not be extracted (it might be a scanned image or corrupted).
+    
+    IMPORTANT: You must inform the user in KOREAN (한국어) that you cannot answer questions about the paper because the text content is missing or unreadable. 
+    Do not make up facts about the paper.`;
 
     // Construct full message history starting with system prompt
     const fullMessages = [

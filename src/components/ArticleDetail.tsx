@@ -51,7 +51,8 @@ export function ArticleDetail({
   const [inputMessage, setInputMessage] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   
-  const inputRef = useRef<HTMLInputElement>(null);
+  const keywordInputRef = useRef<HTMLInputElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null); // New ref for the message container
 
   // Reset chat when article changes
@@ -217,20 +218,32 @@ export function ArticleDetail({
 
                     {/* Input Area */}
                     <div className="p-4 bg-slate-900 border-t border-slate-700/50 z-10 shrink-0">
-                        <form onSubmit={handleSendMessage} className="relative">
-                            <input
+                        <form onSubmit={(e) => handleSendMessage(e)} className="relative flex items-end gap-2">
+                            <textarea
+                                ref={chatInputRef}
                                 autoFocus
-                                type="text"
                                 value={inputMessage}
-                                onChange={(e) => setInputMessage(e.target.value)}
+                                onChange={(e) => {
+                                    setInputMessage(e.target.value);
+                                    // Auto-resize
+                                    e.target.style.height = 'auto';
+                                    e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleSendMessage(e);
+                                    }
+                                }}
                                 placeholder="Type your question..."
                                 disabled={isChatLoading}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-4 pr-12 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all disabled:opacity-50"
+                                rows={1}
+                                className="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-4 pr-12 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all disabled:opacity-50 resize-none min-h-[44px] max-h-[150px] custom-scrollbar"
                             />
                             <button
                                 type="submit"
                                 disabled={!inputMessage.trim() || isChatLoading}
-                                className="absolute right-2 top-2 p-1.5 text-slate-400 hover:text-emerald-400 disabled:opacity-50 disabled:hover:text-slate-400 transition-colors"
+                                className="absolute right-3 bottom-3 p-1.5 text-slate-400 hover:text-emerald-400 disabled:opacity-50 disabled:hover:text-slate-400 transition-colors bg-slate-800/80 rounded-lg"
                             >
                                 <span className="sr-only">Send</span>
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="transform rotate-0">
@@ -317,7 +330,7 @@ export function ArticleDetail({
                         <form onSubmit={handleAdd} className="mb-4">
                             <div className="relative group">
                                 <input 
-                                    ref={inputRef}
+                                    ref={keywordInputRef}
                                     type="text"
                                     list="existing-keywords"
                                     value={newKeyword}
