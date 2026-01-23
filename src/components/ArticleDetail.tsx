@@ -1,5 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { cn } from '@/lib/utils';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import remarkBreaks from 'remark-breaks';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 
 interface Article {
     id: number;
@@ -46,7 +52,7 @@ export function ArticleDetail({
   const [isChatLoading, setIsChatLoading] = useState(false);
   
   const inputRef = useRef<HTMLInputElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null); // New ref for the message container
 
   // Reset chat when article changes
   useEffect(() => {
@@ -58,8 +64,9 @@ export function ArticleDetail({
 
   // Auto-scroll to bottom of chat
   useEffect(() => {
-    if (isChatMode && chatEndRef.current) {
-        chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (isChatMode && messageListRef.current) {
+        const scrollContainer = messageListRef.current;
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
     }
   }, [messages, isChatMode]);
 
@@ -110,7 +117,7 @@ export function ArticleDetail({
   };
 
   return (
-    <div className="w-full border-l border-slate-700/50 bg-slate-900/30 backdrop-blur-sm flex flex-col h-full ring-1 ring-white/5">
+    <div className="w-full min-w-0 border-l border-slate-700/50 bg-slate-900/30 backdrop-blur-sm flex flex-col h-full ring-1 ring-white/5">
         {/* Header Actions */}
         <div className="p-4 border-b border-slate-700/50 flex justify-between items-center bg-slate-900/50 drag-region">
             <div className="flex gap-2 no-drag">
@@ -158,8 +165,11 @@ export function ArticleDetail({
         <div className="flex-1 overflow-hidden relative flex flex-col">
             {isChatMode ? (
                 // --- CHAT VIEW ---
-                <div className="flex flex-col h-full animate-in fade-in duration-300">
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+                <div className="flex flex-col h-full min-h-0">
+                    <div 
+                        ref={messageListRef}
+                        className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 min-h-0"
+                    >
                         {messages.length === 0 && (
                             <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-60">
                                 <div className="text-4xl mb-4">🤖</div>
@@ -174,12 +184,21 @@ export function ArticleDetail({
                                 msg.role === 'user' ? "self-end items-end" : "self-start items-start"
                             )}>
                                 <div className={cn(
-                                    "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm",
+                                    "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm prose prose-invert prose-sm max-w-none break-words",
                                     msg.role === 'user' 
-                                        ? "bg-blue-600 text-white rounded-br-none" 
-                                        : "bg-slate-700/80 text-slate-200 rounded-bl-none border border-slate-600/50"
+                                        ? "bg-blue-600 text-white rounded-br-none prose-p:text-white prose-a:text-white/90 prose-p:my-1 prose-headings:my-2 prose-ul:my-2 prose-li:my-0.5" 
+                                        : "bg-slate-700/80 text-slate-200 rounded-bl-none border border-slate-600/50 prose-p:text-slate-200 prose-a:text-blue-400 prose-code:bg-slate-800 prose-code:px-1 prose-code:rounded prose-pre:bg-slate-900 prose-pre:rounded-lg prose-p:my-1 prose-headings:my-2 prose-ul:my-2 prose-li:my-0.5"
                                 )}>
-                                    {msg.content}
+                                    <Markdown 
+                                        remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} 
+                                        rehypePlugins={[rehypeKatex]}
+                                        components={{
+                                            p: ({node, ...props}: any) => <p {...props} />,
+                                            a: ({node, href, ...props}: any) => <a href={href} target="_blank" rel="noopener noreferrer" className="hover:underline" {...props} />
+                                        }}
+                                    >
+                                        {msg.content}
+                                    </Markdown>
                                 </div>
                                 <span className="text-[10px] text-slate-500 mt-1 px-1">
                                     {msg.role === 'user' ? 'You' : 'AI Assistant'}
@@ -194,11 +213,10 @@ export function ArticleDetail({
                                 <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                             </div>
                         )}
-                        <div ref={chatEndRef} />
                     </div>
 
                     {/* Input Area */}
-                    <div className="p-4 bg-slate-900/50 border-t border-slate-700/50 backdrop-blur-md">
+                    <div className="p-4 bg-slate-900 border-t border-slate-700/50 z-10 shrink-0">
                         <form onSubmit={handleSendMessage} className="relative">
                             <input
                                 autoFocus

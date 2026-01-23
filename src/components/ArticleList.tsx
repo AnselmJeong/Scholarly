@@ -24,13 +24,29 @@ interface ArticleListProps {
     onOpenPdf?: (filename: string) => void;
     onOpenGuidance?: (article: any) => void;
     onToggleKey?: (articleId: number, isKey: boolean) => void;
+    searchTerm: string;
+    onSearchChange: (term: string) => void;
+    onRescan?: () => void;
 }
 
 import { useState, useMemo } from 'react';
 
-export function ArticleList({ articles, onSelect, onExport, onExportBibtex, selectedId, onOpenPdf, onOpenGuidance, onToggleKey }: ArticleListProps) {
+export function ArticleList({ 
+    articles, 
+    onSelect, 
+    onExport, 
+    onExportBibtex, 
+    selectedId, 
+    onOpenPdf, 
+    onOpenGuidance, 
+    onToggleKey,
+    searchTerm,
+    onSearchChange,
+    onRescan 
+}: ArticleListProps) {
   const [sortField, setSortField] = useState<'title' | 'authors' | 'year' | 'isKey'>('year');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [isRescanning, setIsRescanning] = useState(false);
 
   const handleSort = (field: 'title' | 'authors' | 'year' | 'isKey') => {
     if (sortField === field) {
@@ -72,31 +88,82 @@ export function ArticleList({ articles, onSelect, onExport, onExportBibtex, sele
     return <span className="text-blue-400 ml-1">{sortDirection === 'asc' ? '↑' : '↓'}</span>;
   };
 
+  const handleRescanClick = async () => {
+    if (onRescan && !isRescanning) {
+        setIsRescanning(true);
+        try {
+            await onRescan();
+        } finally {
+            setIsRescanning(false);
+        }
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-800/30 backdrop-blur-sm">
         {/* Header */}
-        <div className="border-b border-slate-700/50 px-6 py-4 flex items-center justify-between bg-slate-900/30 drag-region">
-            <div>
-                <h2 className="text-lg font-semibold text-slate-200">Articles</h2>
-                <span className="text-xs text-slate-500">{articles.length} items</span>
-            </div>
-            
-            {articles.length > 0 && (
-                <div className="flex gap-2 no-drag">
-                    <button 
-                      onClick={onExportBibtex}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-purple-900/30 border border-purple-700/50 rounded-lg text-xs font-medium text-purple-300 hover:text-white hover:bg-purple-800/40 transition-all shadow-lg shadow-black/20"
-                    >
-                      📚 Export BibTeX
-                    </button>
-                    <button 
-                      onClick={onExport}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-all shadow-lg shadow-black/20"
-                    >
-                      📥 Export as ZIP
-                    </button>
+        <div className="border-b border-slate-700/50 px-6 py-4 bg-slate-900/30 drag-region space-y-3">
+            <div className="flex items-center justify-between">
+                <div>
+                    <div className="flex items-center gap-2">
+                        <h2 className="text-lg font-semibold text-slate-200">Articles</h2>
+                        <button 
+                            onClick={handleRescanClick}
+                            disabled={isRescanning}
+                            className={cn(
+                                "flex items-center gap-2 px-3 py-1 ml-2 rounded-md transition-colors no-drag border border-transparent",
+                                isRescanning 
+                                    ? "bg-blue-500/20 text-blue-300 border-blue-500/30" 
+                                    : "bg-slate-700/50 text-slate-300 hover:bg-blue-600/20 hover:text-blue-200 hover:border-blue-500/30"
+                            )}
+                            title="Rescan & Prune Orphans"
+                        >
+                           <span className={isRescanning ? "animate-spin" : ""}>🔄</span>
+                           <span className="text-xs font-medium">Rescan</span>
+                        </button>
+                    </div>
+                    <span className="text-xs text-slate-500">{articles.length} items</span>
                 </div>
-            )}
+                
+                {articles.length > 0 && (
+                    <div className="flex gap-2 no-drag">
+                        <button 
+                          onClick={onExportBibtex}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 bg-purple-900/30 border border-purple-700/50 rounded-lg text-xs font-medium text-purple-300 hover:text-white hover:bg-purple-800/40 transition-all shadow-lg shadow-black/20"
+                        >
+                          📚 BibTeX
+                        </button>
+                        <button 
+                          onClick={onExport}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-all shadow-lg shadow-black/20"
+                        >
+                          📥 ZIP
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            {/* Search Input */}
+            <div className="relative no-drag">
+                <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => onSearchChange(e.target.value)}
+                    placeholder="Filter by filename..."
+                    className="w-full bg-slate-900/50 border border-slate-700/50 rounded-lg py-2 pl-9 pr-4 text-sm text-slate-300 placeholder-slate-500 focus:outline-none focus:border-blue-500/30 focus:bg-slate-900/80 transition-all"
+                />
+                <div className="absolute left-3 top-2.5 text-slate-600">
+                    🔍
+                </div>
+                {searchTerm && (
+                    <button 
+                        onClick={() => onSearchChange('')}
+                        className="absolute right-3 top-2.5 text-slate-600 hover:text-slate-400"
+                    >
+                        ✕
+                    </button>
+                )}
+            </div>
         </div>
         
         {/* List Layout (Flexbox) */}

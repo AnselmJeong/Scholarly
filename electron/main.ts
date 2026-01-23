@@ -612,6 +612,31 @@ app.whenReady().then(async () => {
     return { success: false, error: "File not found" };
   });
 
+  ipcMain.handle('prune-orphans', async () => {
+    try {
+        const allArticles = await getDb().select().from(articles);
+        let removedCount = 0;
+        
+        for (const article of allArticles) {
+            if (!fs.existsSync(article.filePath)) {
+                console.log(`🗑️ Pruning orphan: ${article.filePath}`);
+                await getDb().delete(articleKeywords).where(eq(articleKeywords.articleId, article.id));
+                await getDb().delete(articles).where(eq(articles.id, article.id));
+                removedCount++;
+            }
+        }
+        
+        if (removedCount > 0) {
+            win?.webContents.send('data-updated');
+        }
+        
+        return { success: true, removedCount };
+    } catch (error) {
+        console.error("Error pruning orphans:", error);
+        return { success: false, error: String(error) };
+    }
+  });
+
   ipcMain.handle('delete-article', async (_event, articleId: number) => {
     try {
       await getDb().delete(articleKeywords).where(eq(articleKeywords.articleId, articleId));

@@ -179,6 +179,8 @@ export async function chatWithPaper(
     Answer the user's questions based ONLY on the content provided below.
     If the answer is not in the text, say you don't know.
     
+    IMPORTANT: You must answer in KOREAN (한국어) unless the user specifically asks for another language.
+    
     --- PAPER CONTENT BEGINS ---
     ${truncatedContext}
     --- PAPER CONTENT ENDS ---

@@ -117,17 +117,31 @@ function App() {
     }
   }, [selectedArticleId]);
 
-  // --- Filtering Logic ---
+  // Filtering Logic
+  const [filenameFilter, setFilenameFilter] = useState('');
 
   const filteredArticles = useMemo(() => {
-    if (selectedKeywordId === -1 || !selectedKeywordId) return articles;
+    let result = articles;
+
+    // 1. Keyword Filter
+    if (selectedKeywordId && selectedKeywordId !== -1) {
+        const linkedArticleIds = links
+          .filter(l => l.keywordId === selectedKeywordId)
+          .map(l => l.articleId);
+        result = result.filter(a => linkedArticleIds.includes(a.id));
+    }
+
+    // 2. Filename Search Filter
+    if (filenameFilter.trim()) {
+        const lowerFilter = filenameFilter.toLowerCase();
+        result = result.filter(a => 
+            (a.filename && a.filename.toLowerCase().includes(lowerFilter)) ||
+            (a.title && a.title.toLowerCase().includes(lowerFilter))
+        );
+    }
     
-    const linkedArticleIds = links
-      .filter(l => l.keywordId === selectedKeywordId)
-      .map(l => l.articleId);
-      
-    return articles.filter(a => linkedArticleIds.includes(a.id));
-  }, [articles, links, selectedKeywordId]);
+    return result;
+  }, [articles, links, selectedKeywordId, filenameFilter]);
 
   const filteredKeywords = useMemo(() => {
     const currentArticleIds = filteredArticles.map(a => a.id);
@@ -150,6 +164,23 @@ function App() {
   }, [keywords, links, filteredArticles]);
 
   // --- Handlers ---
+
+  const handlePruneOrphans = async () => {
+    if (confirm("This will remove all records from the database for files that no longer exist in the watched folders. Continue?")) {
+        try {
+            const result = await window.ipcRenderer.invoke('prune-orphans');
+            if (result.success) {
+                alert(`Removed ${result.removedCount} orphaned records.`);
+                fetchData();
+            } else {
+                alert("Error pruning orphans: " + result.error);
+            }
+        } catch (e) {
+            console.error("Prune error:", e);
+            alert("Failed to prune orphans.");
+        }
+    }
+  };
 
   const handleProcess = async () => {
     if (!selectedArticleId) return;
@@ -331,6 +362,9 @@ function App() {
                  onOpenPdf={(filename) => handleOpenPdf(filename)}
                  onOpenGuidance={handleOpenGuidance}
                  onToggleKey={handleToggleKey}
+                 searchTerm={filenameFilter}
+                 onSearchChange={setFilenameFilter}
+                 onRescan={handlePruneOrphans}
                />
            ) : (
                <GuidanceViewer 
