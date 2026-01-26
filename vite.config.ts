@@ -19,7 +19,13 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['better-sqlite3'],
+              external: [
+                'better-sqlite3',
+                '@lancedb/lancedb',
+                '@xenova/transformers',
+                'ollama',
+                'apache-arrow',
+              ],
             },
           },
           define: {

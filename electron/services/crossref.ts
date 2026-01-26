@@ -24,8 +24,11 @@ export interface CrossrefResponse {
 export async function searchCrossref(title: string): Promise<CrossrefWork | null> {
   try {
     const encodedTitle = encodeURIComponent(title);
+    const url = `https://api.crossref.org/works?query.title=${encodedTitle}&rows=1`;
+    console.log(`[Crossref] Fetching: ${url}`);
+    
     const response = await fetch(
-      `https://api.crossref.org/works?query.title=${encodedTitle}&rows=1`,
+      url,
       {
         headers: {
           'User-Agent': 'AcademicKeywordManager/1.0 (mailto:anselmjeong@gmail.com)'
@@ -33,14 +36,20 @@ export async function searchCrossref(title: string): Promise<CrossrefWork | null
       }
     );
 
+    console.log(`[Crossref] Response status: ${response.status}`);
+
     if (!response.ok) {
       console.error('Crossref API error:', response.status);
       return null;
     }
 
     const data: CrossrefResponse = await response.json();
+    console.log(`[Crossref] Items found: ${data.message.items?.length || 0}`);
+    
     if (data.message.items && data.message.items.length > 0) {
-      return data.message.items[0];
+      const item = data.message.items[0];
+      console.log(`[Crossref] Top result: "${item.title?.[0]}" by ${item.author?.[0]?.family}`);
+      return item;
     }
     return null;
   } catch (error) {

@@ -4,7 +4,9 @@ import path from 'node:path'
 import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
 import { extractText } from './services/pdf'
-import { extractKeywords, checkOllamaStatus, listModels, setModel, chatWithPaper, setKeywordModel, setChatModel } from './services/ai'
+import { checkOllamaStatus, listModels, setModel, chatWithPaper, setKeywordModel, setChatModel } from './services/ai'
+import { processKeywords } from './services/keywordPipeline'
+import { initLanceDB } from './db/lancedb'
 import { loadSettings, saveSettings, AppSettings } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
 import { generateBibtexForArticles, searchCrossref } from './services/crossref'
@@ -112,18 +114,27 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
       return;
     }
     
-    // 1. Metadata Check & Update
+    const hasRichMetadata = article.doi && article.abstract && article.journal;
     const needsMetadataUpdate = force || !article.title || article.title === filename || !article.authors || 
-                               (article.title && article.title.includes('.pdf'));
+                               (article.title && article.title.includes('.pdf')) ||
+                               !hasRichMetadata;
+
+    // Improve search accuracy by using parsed title if available
+    const parsed = parseFilename(filename);
+    const searchTitle = article.title && article.title !== filename 
+      ? article.title 
+      : (parsed.title && parsed.title !== filename.replace(/\.pdf$/i, '') ? parsed.title : filename.replace(/\.pdf$/i, ''));
+    
+    console.log(`\n   [ProcessFile] Metadata Check:`);
+    console.log(`   - File: ${filename}`);
+    console.log(`   - Current Title: "${article.title}"`);
+    console.log(`   - Parsed Title: "${parsed.title}"`);
+    console.log(`   - Search Title: "${searchTitle}"`);
+    console.log(`   - Authors: "${article.authors}"`);
+    console.log(`   - Needs Update: ${needsMetadataUpdate} (Force: ${force})`);
 
     if (needsMetadataUpdate) {
       try {
-        // Improve search accuracy by using parsed title if available
-        const parsed = parseFilename(filename);
-        const searchTitle = article.title && article.title !== filename 
-          ? article.title 
-          : (parsed.title && parsed.title !== filename.replace(/\.pdf$/i, '') ? parsed.title : filename.replace(/\.pdf$/i, ''));
-        
         console.log(`   🔍 Searching Crossref for metadata: ${searchTitle}`);
         const metadata = await searchCrossref(searchTitle);
   
@@ -157,12 +168,18 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
             // Clean abstract (remove HTML tags)
             updates.abstract = metadata.abstract.replace(/<[^>]*>/g, '').trim();
           }
+
+          console.log(`   [ProcessFile] Prepared updates:`, JSON.stringify(updates));
+          console.log(`   [ProcessFile] Updates count: ${Object.keys(updates).length}`);
   
           // Update DB if we have data
           if (Object.keys(updates).length > 0) {
-            await getDb().update(articles)
+            const result = await getDb().update(articles)
               .set(updates)
-              .where(eq(articles.id, article.id));
+              .where(eq(articles.id, article.id))
+              .returning(); // Attempt to return modified rows if supported, or just wait
+            
+            console.log(`   [ProcessFile] DB Update executed.`);
             console.log(`   Updated article metadata from Crossref`);
             win?.webContents.send('data-updated');
             
@@ -173,7 +190,7 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
              console.log(`   ❌ No Crossref data found`);
         }
       } catch (err) {
-        console.error('Error fetching metadata:', err);
+        console.error('Error fetching metadata (ProcessFile):', err);
       }
     }
 
@@ -192,37 +209,17 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
     const text = await extractText(filePath);
     console.log(`   Text extracted: ${text.length} chars`);
     
-    // Get existing keywords (normalized for comparison)
-    const allKeywords = await getDb().select().from(keywords);
-    const keywordList = allKeywords.map(k => k.keyword);
+    // NEW: Use embedding-based keyword pipeline
+    const extractedKeywords = await processKeywords(text);
+    console.log(`   Keywords extracted:`, extractedKeywords.map(k => k.text));
     
-    // Extract keywords using Ollama
-    const result = await extractKeywords(text, keywordList);
-    console.log(`   Keywords found:`, result);
-    
-    // Normalize keywords (Title Case)
-    const normalizeKeyword = (kw: string): string => {
-      return kw.toLowerCase()
-        .split(' ')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(' ');
-    };
-    
-    // Combine and normalize keywords, remove duplicates
-    const allExtractedKeywords = [...result.existing, ...result.new];
-    const normalizedKeywords = [...new Set(allExtractedKeywords.map(normalizeKeyword))];
-    
-    // Limit to max 10 keywords
-    const finalKeywords = normalizedKeywords.slice(0, 10);
-    console.log(`   Normalized keywords (${finalKeywords.length}):`, finalKeywords);
-    
-    // Save keywords to DB and link to article
-    for (const kw of finalKeywords) {
-      // Check if keyword exists (case-insensitive)
+    // Save keywords to SQLite DB and link to article
+    for (const { text: kw } of extractedKeywords) {
+      // Check if keyword exists in SQLite (case-insensitive)
       const [existingKw] = await getDb().select().from(keywords).where(eq(keywords.keyword, kw));
       
       if (!existingKw) {
-        // Insert new keyword
+        // Insert new keyword to SQLite
         await getDb().insert(keywords).values({
           keyword: kw,
           createdDate: new Date(),
@@ -230,7 +227,7 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
         }).onConflictDoNothing();
       }
       
-      // Get keyword ID
+      // Get keyword ID from SQLite
       const [keywordRow] = await getDb().select().from(keywords).where(eq(keywords.keyword, kw));
       if (keywordRow) {
         // Link keyword to article
@@ -247,7 +244,7 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
       }
     }
     
-    console.log(`   ✅ Saved ${allExtractedKeywords.length} keywords for ${filename}`);
+    console.log(`   ✅ Saved ${extractedKeywords.length} keywords for ${filename}`);
     win?.webContents.send('data-updated');
     
   } catch (error) {
@@ -266,6 +263,14 @@ app.whenReady().then(async () => {
       const start = Date.now();
       initDB();
       console.log(`Database initialized in ${Date.now() - start}ms`);
+      
+      // Initialize LanceDB for vector keyword storage
+      initLanceDB().then(() => {
+        console.log('LanceDB initialized for keyword embeddings');
+      }).catch((err) => {
+        console.error('Failed to init LanceDB:', err);
+      });
+      
       win?.webContents.send('db-ready');
       
       // Load and apply settings
@@ -491,7 +496,10 @@ app.whenReady().then(async () => {
       const existingArticles = await getDb().select({ 
         filePath: articles.filePath,
         title: articles.title,
-        authors: articles.authors
+        authors: articles.authors,
+        doi: articles.doi,
+        abstract: articles.abstract,
+        journal: articles.journal
       }).from(articles);
       const existingMap = new Map(existingArticles.map(a => [a.filePath, a]));
       
@@ -509,17 +517,26 @@ app.whenReady().then(async () => {
         try {
           if (existingMap.has(fp)) {
              const existing = existingMap.get(fp)!;
+             // Check if we have rich metadata (DOI, Abstract, Journal)
+             // We cast to any because typescript inference might lag until build, but we added columns above.
+             const art = existing as any;
+             const hasRichMetadata = art.doi && art.abstract && art.journal;
+             
              const needsUpdate = !existing.title || 
                                 existing.title === filename || 
                                 existing.title.toLowerCase().includes('.pdf') || 
-                                !existing.authors;
+                                !existing.authors ||
+                                !hasRichMetadata;
 
              if (needsUpdate) {
                  console.log(`♻️  Re-processing existing file (metadata poor): ${filename}`);
+                 console.log(`    Missing: ${!art.doi ? 'DOI ' : ''}${!art.abstract ? 'Abstract ' : ''}${!art.journal ? 'Journal' : ''}`);
+                 // We must NOT await here blindly if there are many files, it will slow down startup massive time.
+                 // But for now, user wants correctness. We can do it concurrently with a limit or just await.
+                 // Given the user is debugging, await is safer to see logs.
                  await processFile(fp);
              } else {
-                 // Metadata is already good in DB, do not overwrite with filename parsing.
-                 // This prevents reverting AI-scanned metadata back to filename-based metadata.
+                 // Metadata is good.
              }
              
           } else {

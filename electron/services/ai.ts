@@ -1,8 +1,9 @@
-// Ollama AI Service for keyword extraction
+import ollama from 'ollama';
 
+// Ollama AI Service for keyword extraction
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 let keywordModel = 'nemotron-3-nano:30b-cloud'; // Default for keywords
-let chatModel = 'nemotron-3-nano:30b-cloud';    // Default for chat
+let chatModel = 'mistral-large-3:675b-cloud';    // Default for chat
 
 // Legacy support
 export function setModel(name: string) {
@@ -21,133 +22,88 @@ export function setChatModel(name: string) {
     console.log(`Chat AI model set to: ${name}`);
 }
 
-export async function extractKeywords(text: string, existingKeywords: string[], retryCount: number = 0): Promise<{ existing: string[], new: string[] }> {
-    const keywordList = existingKeywords.length > 0 ? existingKeywords.join(', ') : "None";
-    
+/**
+ * NEW: Free keyword extraction without structured output
+ * Phase 1 of the embedding-based pipeline
+ * Extracts 15 keywords that LLM thinks are most relevant
+ */
+export async function extractKeywordsRaw(text: string, retryCount: number = 0): Promise<string[]> {
     // Truncate text to avoid token limits
     const truncatedText = text.substring(0, 15000);
 
-    const prompt = `You are an expert academic librarian. Extract keywords for this academic paper.
+    const prompt = `Extract exactly 15 keywords that represent this academic paper's content.
 
-Keywords already in our database (available for reuse):
-${keywordList}
+Guidelines:
+- Keywords should be noun phrases (1-4 words typically)
+- Avoid overly generic terms that apply to most papers in the field
+- Provide keywords for established concepts, methods, or domains that situate this paper.
 
-Your task:
-1. Read the paper and identify its MAIN TOPICS
-2. From the keywords above, select UP TO 5 that are TRULY RELEVANT to this paper
-   - Only select if the keyword directly relates to the paper content
-   - It's OK to select 0 if none are relevant
-3. Create EXACTLY 5 NEW keywords specific to THIS paper
-   - These should capture the unique topics NOT covered by existing keywords
-   - Use specific academic terms
+Output format:
+Return ONLY the keywords as a comma-separated list. Do not use numbering, bullets, or JSON.
 
-RESPOND WITH ONLY THIS JSON (no markdown, no explanation):
-{"existing": ["max 5 relevant keywords"], "new": ["exactly 5 new keywords"]}
+Example output:
+Keyword One, Keyword Two, Keyword Three, ...
 
 Paper text:
 ${truncatedText}`;
 
     try {
-        console.log(`Calling Ollama (${keywordModel}) for keyword extraction...`);
+        console.log(`Calling Ollama (${keywordModel}) for free keyword extraction...`);
         
-        const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model: keywordModel,
-                prompt: prompt,
-                stream: false,
-                options: {
-                    temperature: 0.1,
-                    num_predict: 1000
-                }
-            })
+        const response = await ollama.chat({
+            model: keywordModel,
+            messages: [{ role: 'user', content: prompt }],
+            options: {
+                temperature: 0.8,
+                num_predict: 500
+            }
         });
 
-        // Handle rate limiting with retry
-        if (response.status === 429) {
-            if (retryCount < 3) {
-                const waitTime = Math.pow(2, retryCount) * 2000; // 2s, 4s, 8s
-                console.log(`Rate limited, waiting ${waitTime/1000}s before retry ${retryCount + 1}/3...`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
-                return extractKeywords(text, existingKeywords, retryCount + 1);
-            }
-            throw new Error(`Ollama request failed after 3 retries: 429 Too Many Requests`);
-        }
+        const content = (response.message.content || '').trim();
+        console.log('Ollama raw keywords response:', content);
 
-        if (!response.ok) {
-            throw new Error(`Ollama request failed: ${response.status} ${response.statusText}`);
-        }
+        // Clean up response if it contains "Keywords:" prefix or similar
+        let cleanContent = content.replace(/^Keywords:?/i, '').replace(/Here are.*?:\s*/i, '').trim();
+        
+        // Remove markdown formatting if present (bold, etc)
+        cleanContent = cleanContent.replace(/\*\*/g, '').replace(/\*/g, '');
 
-        const data = await response.json();
-        const content = data.response || '';
-        
-        console.log('Ollama response:', content);
+        // Parse comma-separated list
+        const keywords = cleanContent
+            .split(/,|\n/)  // Split by comma or newline (in case model ignores instruction)
+            .map((kw: string) => kw.trim().toLowerCase())
+            .filter((kw: string) => kw.length > 0 && kw.length < 100)
+            .map((kw: string) => {
+                // Title case normalization
+                return kw.split(' ')
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                    .join(' ');
+            });
 
-        // Parse JSON from response - handle markdown code blocks
-        let cleanContent = content;
+        // Remove duplicates and non-keywords (e.g. "1.", "-", etc if splitting failed)
+        const unique = [...new Set(keywords)]
+            .filter(kw => !/^\d+\.?$/.test(kw)) // Remove disconnected numbers
+            .filter(kw => kw.length > 2); // Remove too short junk
         
-        // Remove markdown code block wrappers
-        if (cleanContent.includes('```json')) {
-            cleanContent = cleanContent.replace(/```json\s*/g, '').replace(/```\s*/g, '');
-        } else if (cleanContent.includes('```')) {
-            cleanContent = cleanContent.replace(/```\s*/g, '');
-        }
+        console.log(`Extracted ${unique.length} unique keywords`);
+        return unique.slice(0, 15);  // Cap at 15
         
-        const jsonStart = cleanContent.indexOf('{');
-        const jsonEnd = cleanContent.lastIndexOf('}');
-        
-        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-            let jsonStr = cleanContent.substring(jsonStart, jsonEnd + 1);
-            
-            // Try to fix truncated JSON
-            try {
-                const result = JSON.parse(jsonStr);
-                console.log('Parsed keywords:', result);
-                
-                // Limit existing to max 5, new to 5
-                const existing = (result.existing || []).slice(0, 5);
-                const newKws = (result.new || []).slice(0, 5);
-                
-                return { existing, new: newKws };
-            } catch (parseError) {
-                // Try to repair incomplete JSON
-                console.log('Attempting to repair JSON...');
-                
-                // Check if arrays are incomplete
-                if (!jsonStr.endsWith('}')) {
-                    // Try to close incomplete arrays and object
-                    const openBrackets = (jsonStr.match(/\[/g) || []).length;
-                    const closeBrackets = (jsonStr.match(/\]/g) || []).length;
-                    
-                    for (let i = 0; i < openBrackets - closeBrackets; i++) {
-                        jsonStr += ']';
-                    }
-                    jsonStr += '}';
-                }
-                
-                try {
-                    const result = JSON.parse(jsonStr);
-                    console.log('Repaired and parsed keywords:', result);
-                    const existing = (result.existing || []).slice(0, 5);
-                    const newKws = (result.new || []).slice(0, 5);
-                    return { existing, new: newKws };
-                } catch (e) {
-                    console.error('Failed to parse/repair JSON:', jsonStr.substring(0, 200));
-                }
-            }
-        }
-        
-        console.warn('Could not parse keywords from Ollama response');
-        return { existing: [], new: [] };
     } catch (error) {
-        console.error("Error calling Ollama:", error);
-        // Return empty rather than throwing to allow graceful degradation
-        return { existing: [], new: [] };
+        console.error("Error calling Ollama for keyword extraction:", error);
+        
+        // Retry on failure
+        if (retryCount < 3) {
+            const waitTime = Math.pow(2, retryCount) * 2000;
+            console.log(`Retrying in ${waitTime/1000}s... (attempt ${retryCount + 1}/3)`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            return extractKeywordsRaw(text, retryCount + 1);
+        }
+        
+        return [];
     }
 }
+
+
 
 // Check if Ollama is running
 export async function checkOllamaStatus(): Promise<boolean> {
