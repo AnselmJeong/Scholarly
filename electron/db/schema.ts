@@ -15,7 +15,9 @@ export const articles = sqliteTable('articles', {
   lastModified: integer('last_modified', { mode: 'timestamp' }),
   fileHash: text('file_hash'),
   fileSize: integer('file_size'),
-  isKey: integer('is_key').default(0)
+  isKey: integer('is_key').default(0),
+  isRead: integer('is_read').default(0),
+  pdfContext: text('pdf_context')  // Cached extracted PDF text
 });
 
 export const keywords = sqliteTable('keywords', {

@@ -11,6 +11,7 @@ interface Article {
     doi?: string | null;
     hasGuidance?: boolean;
     isKey?: number | boolean;
+    isRead?: number | boolean;
     abstract?: string | null;
     filePath?: string;
 }
@@ -24,9 +25,11 @@ interface ArticleListProps {
     onOpenPdf?: (filename: string) => void;
     onOpenGuidance?: (article: any) => void;
     onToggleKey?: (articleId: number, isKey: boolean) => void;
+    onToggleRead?: (articleId: number, isRead: boolean) => void;
     searchTerm: string;
     onSearchChange: (term: string) => void;
     onRescan?: () => void;
+    onSelectFolder?: () => void;
 }
 
 import { useState, useMemo } from 'react';
@@ -40,9 +43,11 @@ export function ArticleList({
     onOpenPdf, 
     onOpenGuidance, 
     onToggleKey,
+    onToggleRead,
     searchTerm,
     onSearchChange,
-    onRescan 
+    onRescan,
+    onSelectFolder 
 }: ArticleListProps) {
   const [sortField, setSortField] = useState<'title' | 'authors' | 'year' | 'isKey'>('year');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
@@ -176,6 +181,9 @@ export function ArticleList({
                 >
                     ⭐ <SortIcon field="isKey" />
                 </div>
+                <div className="w-10 px-2 py-2.5 flex items-center justify-center flex-shrink-0" title="Read">
+                    ✓
+                </div>
                 <div 
                     className="flex-1 px-4 py-2.5 cursor-pointer hover:text-slate-300 transition-colors flex items-center min-w-0"
                     onClick={() => handleSort('title')}
@@ -227,6 +235,21 @@ export function ArticleList({
                                  {article.isKey ? '⭐' : '☆'}
                              </button>
                         </div>
+                        <div className="w-10 px-2 flex-shrink-0 flex justify-center py-2">
+                             <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onToggleRead && onToggleRead(article.id, !article.isRead);
+                                }}
+                                className={cn(
+                                    "transition-all duration-200 transform active:scale-125",
+                                    article.isRead ? "text-emerald-400" : "text-slate-700 hover:text-slate-500 opacity-30 hover:opacity-100"
+                                )}
+                                title={article.isRead ? "Mark as unread" : "Mark as read"}
+                             >
+                                 {article.isRead ? '☑' : '☐'}
+                             </button>
+                        </div>
                         <div className="flex-1 px-4 py-2 min-w-0">
                             <div 
                                 className={cn(
@@ -273,9 +296,17 @@ export function ArticleList({
             
             {articles.length === 0 && (
                 <div className="flex flex-col items-center justify-center h-64 text-slate-500">
-                    <div className="text-5xl mb-4">📄</div>
-                    <p className="text-lg font-medium">No articles yet</p>
-                    <p className="text-sm mt-1">Select a folder to scan for PDFs</p>
+                    <div className="text-6xl mb-6">📂</div>
+                    <p className="text-lg font-medium text-slate-300">Welcome to Scholarly</p>
+                    <p className="text-sm mt-2 text-slate-500">Select a folder to start managing your research papers</p>
+                    {onSelectFolder && (
+                        <button
+                            onClick={onSelectFolder}
+                            className="mt-6 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl font-medium hover:from-blue-500 hover:to-purple-500 transition-all shadow-lg shadow-blue-500/20"
+                        >
+                            📁 Select Folder
+                        </button>
+                    )}
                 </div>
             )}
         </div>

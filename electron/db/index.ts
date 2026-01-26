@@ -54,6 +54,31 @@ export function initDB() {
         console.error('Migration failed:', e);
     }
 
+    // Migration: Add is_read column if it doesn't exist
+    try {
+        const tableInfo = sqlite!.prepare("PRAGMA table_info(articles)").all() as any[];
+        const hasIsRead = tableInfo.some(col => col.name === 'is_read');
+        if (!hasIsRead) {
+            console.log('Migrating: Adding is_read column to articles table');
+            run(`ALTER TABLE articles ADD COLUMN is_read INTEGER DEFAULT 0;`);
+        }
+    } catch (e) {
+        console.error('Migration for is_read failed:', e);
+    }
+
+    // Migration: Add pdf_context column if it doesn't exist
+    try {
+        const tableInfo = sqlite!.prepare("PRAGMA table_info(articles)").all() as any[];
+        const hasPdfContext = tableInfo.some(col => col.name === 'pdf_context');
+        if (!hasPdfContext) {
+            console.log('Migrating: Adding pdf_context column to articles table');
+            run(`ALTER TABLE articles ADD COLUMN pdf_context TEXT;`);
+        }
+    } catch (e) {
+        console.error('Migration for pdf_context failed:', e);
+    }
+
+
     run(`
     CREATE TABLE IF NOT EXISTS keywords (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

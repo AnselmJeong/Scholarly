@@ -4,13 +4,17 @@ import path from 'node:path'
 import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
 import { extractText } from './services/pdf'
-import { extractKeywords, checkOllamaStatus, listModels, setModel, chatWithPaper } from './services/ai'
+import { extractKeywords, checkOllamaStatus, listModels, setModel, chatWithPaper, setKeywordModel, setChatModel } from './services/ai'
+import { loadSettings, saveSettings, AppSettings } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
 import { generateBibtexForArticles, searchCrossref } from './services/crossref'
 import { eq, and } from 'drizzle-orm'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import archiver from 'archiver'
+
+// Disable Hardware Acceleration to prevent GPU process crashes and startup delay
+app.disableHardwareAcceleration();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -28,6 +32,24 @@ function calculateFileHash(filePath: string): Promise<string> {
     stream.on('error', reject)
   })
 }
+
+// Filename parser helper
+const parseFilename = (filename: string) => {
+  // Expected format: YYYY - Author - Title.pdf
+  const match = filename.match(/^(\d{4})\s*-\s*(.+?)\s*-\s*(.+?)(?:\.pdf)?$/i);
+  if (match) {
+      return {
+          year: parseInt(match[1]),
+          authors: match[2].trim(),
+          title: match[3].trim().replace(/\.pdf$/i, '')
+      };
+  }
+  return {
+      year: null,
+      authors: null,
+      title: filename.replace(/\.pdf$/i, '')
+  };
+};
 
 process.env.APP_ROOT = path.join(__dirname, '..')
 
@@ -50,8 +72,7 @@ function createWindow() {
     width: 1400,
     height: 900,
     titleBarStyle: 'hiddenInset',
-    vibrancy: 'under-window',
-    visualEffectState: 'active'
+    backgroundColor: '#020617' // Matches slate-950
   })
 
   win.webContents.on('did-finish-load', () => {
@@ -79,9 +100,9 @@ app.on('activate', () => {
 })
 
 // Process a single file: extract text, get keywords, save to DB
-async function processFile(filePath: string): Promise<void> {
+async function processFile(filePath: string, force: boolean = false): Promise<void> {
   const filename = path.basename(filePath);
-  console.log(`\n📄 Processing: ${filename}`);
+  console.log(`\n📄 Processing: ${filename} (Force: ${force})`);
   
   try {
     // Get article from DB first
@@ -91,63 +112,79 @@ async function processFile(filePath: string): Promise<void> {
       return;
     }
     
-    // Check if article already has keywords (prevent duplicate processing)
-    const existingLinks = await getDb().select().from(articleKeywords).where(eq(articleKeywords.articleId, article.id));
-    if (existingLinks.length > 0) {
-      console.log(`   Article already has ${existingLinks.length} keywords, skipping`);
-      return;
+    // 1. Metadata Check & Update
+    const needsMetadataUpdate = force || !article.title || article.title === filename || !article.authors || 
+                               (article.title && article.title.includes('.pdf'));
+
+    if (needsMetadataUpdate) {
+      try {
+        // Improve search accuracy by using parsed title if available
+        const parsed = parseFilename(filename);
+        const searchTitle = article.title && article.title !== filename 
+          ? article.title 
+          : (parsed.title && parsed.title !== filename.replace(/\.pdf$/i, '') ? parsed.title : filename.replace(/\.pdf$/i, ''));
+        
+        console.log(`   🔍 Searching Crossref for metadata: ${searchTitle}`);
+        const metadata = await searchCrossref(searchTitle);
+  
+        if (metadata) {
+          console.log(`   ✅ Found Crossref data: ${metadata.title?.[0]}`);
+          
+          // Prepare updates
+          const updates: any = {};
+          
+          if (metadata.title && metadata.title.length > 0) {
+            updates.title = metadata.title[0];
+          }
+          
+          if (metadata.author && metadata.author.length > 0) {
+            updates.authors = metadata.author.map(a => `${a.family}, ${a.given}`).join('; ');
+          }
+          
+          if (metadata.issued?.['date-parts']?.[0]?.[0]) {
+            updates.year = metadata.issued['date-parts'][0][0];
+          }
+          
+          if (metadata['container-title'] && metadata['container-title'].length > 0) {
+            updates.journal = metadata['container-title'][0];
+          }
+          
+          if (metadata.DOI) {
+            updates.doi = metadata.DOI;
+          }
+          
+          if (metadata.abstract) {
+            // Clean abstract (remove HTML tags)
+            updates.abstract = metadata.abstract.replace(/<[^>]*>/g, '').trim();
+          }
+  
+          // Update DB if we have data
+          if (Object.keys(updates).length > 0) {
+            await getDb().update(articles)
+              .set(updates)
+              .where(eq(articles.id, article.id));
+            console.log(`   Updated article metadata from Crossref`);
+            win?.webContents.send('data-updated');
+            
+            // Update local object for subsequent steps
+            Object.assign(article, updates);
+          }
+        } else {
+             console.log(`   ❌ No Crossref data found`);
+        }
+      } catch (err) {
+        console.error('Error fetching metadata:', err);
+      }
     }
 
-    // --- CrossRef Metadata Fetching ---
-    try {
-      const searchTitle = article.title && article.title !== filename ? article.title : filename.replace(/\.pdf$/i, '');
-      console.log(`   🔍 Searching Crossref for metadata: ${searchTitle}`);
-      const metadata = await searchCrossref(searchTitle);
-
-      if (metadata) {
-        console.log(`   ✅ Found Crossref data: ${metadata.title?.[0]}`);
-        
-        // Prepare updates
-        const updates: any = {};
-        
-        if (metadata.title && metadata.title.length > 0) {
-          updates.title = metadata.title[0];
+    // 2. Keyword Extraction Check
+    // Check if article already has keywords (prevent duplicate processing)
+    if (!force) {
+        const existingLinks = await getDb().select().from(articleKeywords).where(eq(articleKeywords.articleId, article.id));
+        if (existingLinks.length > 0) {
+          console.log(`   Article already has ${existingLinks.length} keywords, skipping keyword extraction`);
+          return;
         }
-        
-        if (metadata.author && metadata.author.length > 0) {
-          updates.authors = metadata.author.map(a => `${a.family}, ${a.given}`).join('; ');
-        }
-        
-        if (metadata.issued?.['date-parts']?.[0]?.[0]) {
-          updates.year = metadata.issued['date-parts'][0][0];
-        }
-        
-        if (metadata['container-title'] && metadata['container-title'].length > 0) {
-          updates.journal = metadata['container-title'][0];
-        }
-        
-        if (metadata.DOI) {
-          updates.doi = metadata.DOI;
-        }
-        
-        if (metadata.abstract) {
-          // Clean abstract (remove HTML tags)
-          updates.abstract = metadata.abstract.replace(/<[^>]*>/g, '').trim();
-        }
-
-        // Update DB if we have data
-        if (Object.keys(updates).length > 0) {
-          await getDb().update(articles)
-            .set(updates)
-            .where(eq(articles.id, article.id));
-          console.log(`   Updated article metadata from Crossref`);
-          win?.webContents.send('data-updated');
-        }
-      } else {
-        console.log(`   ⚠️ No Crossref data found`);
-      }
-    } catch (err) {
-      console.error(`   Error fetching Crossref metadata:`, err);
     }
     // ----------------------------------
     
@@ -219,32 +256,52 @@ async function processFile(filePath: string): Promise<void> {
 }
 
 app.whenReady().then(async () => {
-  try {
-    initDB();
-    console.log("Database initialized");
-  } catch (e) {
-    console.error("Failed to init DB:", e);
-  }
-
-  // Check Ollama status
-  const ollamaRunning = await checkOllamaStatus();
-  if (ollamaRunning) {
-    console.log("✅ Ollama is running");
-    const models = await listModels();
-    console.log("   Available models:", models);
-  } else {
-    console.warn("⚠️ Ollama is not running! Please start Ollama for AI features.");
-  }
-
+  // Create Window IMMEDIATELY
   createWindow();
+
+  // Defer heavy initialization to allow UI to render first
+  setTimeout(() => {
+    try {
+      console.log("Starting DB initialization...");
+      const start = Date.now();
+      initDB();
+      console.log(`Database initialized in ${Date.now() - start}ms`);
+      win?.webContents.send('db-ready');
+      
+      // Load and apply settings
+      const settings = loadSettings();
+      console.log('Loaded settings:', settings);
+      if (settings.ai.keywordModel) setKeywordModel(settings.ai.keywordModel);
+      if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
+
+    } catch (e) {
+      console.error("Failed to init DB:", e);
+    }
+  }, 100);
+
+  // Check Ollama status in background
+  checkOllamaStatus().then(async (ollamaRunning) => {
+    if (ollamaRunning) {
+      console.log("✅ Ollama is running");
+      const models = await listModels();
+      console.log("   Available models:", models);
+    } else {
+      console.warn("⚠️ Ollama is not running! Please start Ollama for AI features.");
+    }
+  });
+
+  // IPC Handlers
 
   // IPC Handlers
   ipcMain.handle('get-articles', async () => {
+    // Return empty array if no root path is set
+    if (!currentRootPath) {
+      return [];
+    }
+    
     const allArticles = await getDb().select().from(articles).orderBy(articles.addedDate);
-    // Filter by current root path if set
-    const filtered = currentRootPath 
-      ? allArticles.filter(a => a.filePath.startsWith(currentRootPath!))
-      : allArticles;
+    // Filter by current root path
+    const filtered = allArticles.filter(a => a.filePath.startsWith(currentRootPath!));
 
     // Check for guidance file existence
     const withGuidance = filtered.map(a => {
@@ -371,7 +428,19 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('set-model', (_event, modelName: string) => {
+    // Deprecated but kept for compatibility during migration
     setModel(modelName);
+    return true;
+  });
+
+  ipcMain.handle('get-settings', async () => {
+    return loadSettings();
+  });
+
+  ipcMain.handle('save-settings', async (_event, settings: AppSettings) => {
+    saveSettings(settings);
+    if (settings.ai.keywordModel) setKeywordModel(settings.ai.keywordModel);
+    if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
     return true;
   });
 
@@ -417,29 +486,16 @@ app.whenReady().then(async () => {
       // Send scan start event
       win?.webContents.send('scan-progress', { current: 0, total, filename: '', isScanning: true });
 
-      // Filename parser helper
-      const parseFilename = (filename: string) => {
-        // Expected format: YYYY - Author - Title.pdf
-        const match = filename.match(/^(\d{4})\s*-\s*(.+?)\s*-\s*(.+?)(?:\.pdf)?$/i);
-        if (match) {
-            return {
-                year: parseInt(match[1]),
-                authors: match[2].trim(),
-                title: match[3].trim().replace(/\.pdf$/i, '')
-            };
-        }
-        return {
-            year: null,
-            authors: null,
-            title: filename.replace(/\.pdf$/i, '')
-        };
-      };
 
-      // Pre-fetch existing file paths to avoid N+1 queries and unnecessary hash calculations
-      const existingArticles = await getDb().select({ filePath: articles.filePath }).from(articles);
-      const existingPaths = new Set(existingArticles.map(a => a.filePath));
+      // Pre-fetch existing file paths and metadata
+      const existingArticles = await getDb().select({ 
+        filePath: articles.filePath,
+        title: articles.title,
+        authors: articles.authors
+      }).from(articles);
+      const existingMap = new Map(existingArticles.map(a => [a.filePath, a]));
       
-      console.log(`Scanning ${allPDFs.length} files against ${existingPaths.size} existing records`);
+      console.log(`Scanning ${allPDFs.length} files against ${existingMap.size} existing records`);
 
       // Process each PDF SEQUENTIALLY (important for keyword pool building)
       for (let i = 0; i < allPDFs.length; i++) {
@@ -451,17 +507,20 @@ app.whenReady().then(async () => {
         win?.webContents.send('scan-progress', { current: i + 1, total, filename, isScanning: true });
 
         try {
-          if (existingPaths.has(fp)) {
-             // optimize: skip hash calc for existing files
-             // We can optionally update metadata here if we really want to ensure consistency, 
-             // but strictly skipping is what the user asked for "indexing".
-             // We'll do a lightweight metadata update just in case filename parsing changed, 
-             // but skip the heavy stuff.
-             await getDb().update(articles).set({
-                 title: metadata.title,
-                 authors: metadata.authors,
-                 year: metadata.year
-             }).where(eq(articles.filePath, fp));
+          if (existingMap.has(fp)) {
+             const existing = existingMap.get(fp)!;
+             const needsUpdate = !existing.title || 
+                                existing.title === filename || 
+                                existing.title.toLowerCase().includes('.pdf') || 
+                                !existing.authors;
+
+             if (needsUpdate) {
+                 console.log(`♻️  Re-processing existing file (metadata poor): ${filename}`);
+                 await processFile(fp);
+             } else {
+                 // Metadata is already good in DB, do not overwrite with filename parsing.
+                 // This prevents reverting AI-scanned metadata back to filename-based metadata.
+             }
              
           } else {
              // New file logic
@@ -581,9 +640,19 @@ app.whenReady().then(async () => {
     return null;
   });
 
-  ipcMain.handle('process-file', async (_event, filePath: string) => {
+  ipcMain.handle('process-file', async (_event, arg: string | { filePath: string, force: boolean }) => {
     try {
-      await processFile(filePath);
+      let filePath: string;
+      let force = false;
+      
+      if (typeof arg === 'string') {
+          filePath = arg;
+      } else {
+          filePath = arg.filePath;
+          force = arg.force ?? false;
+      }
+
+      await processFile(filePath, force);
       return { success: true };
     } catch (error) {
       console.error("Error processing file:", error);
@@ -604,12 +673,79 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('open-pdf', async (_event, filePath: string) => {
-    if (fs.existsSync(filePath)) {
-      await shell.openPath(filePath);
+  ipcMain.handle('toggle-read-article', async (_event, { articleId, isRead }) => {
+    try {
+      await getDb().update(articles)
+        .set({ isRead: isRead ? 1 : 0 })
+        .where(eq(articles.id, articleId));
+      win?.webContents.send('data-updated');
       return { success: true };
+    } catch (error) {
+      console.error("Error toggling read status:", error);
+      return { success: false, error: String(error) };
     }
-    return { success: false, error: "File not found" };
+  });
+
+  ipcMain.handle('get-directory-tree', async (_event, rootPath?: string) => {
+    const targetPath = rootPath || currentRootPath;
+    if (!targetPath) {
+      return { success: false, error: 'No root path set', tree: [] };
+    }
+
+    interface TreeNode {
+      name: string;
+      path: string;
+      children: TreeNode[];
+      pdfCount: number;
+    }
+
+    const getSubfolders = (dir: string): TreeNode[] => {
+      const results: TreeNode[] = [];
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && !entry.name.startsWith('.')) {
+            const fullPath = path.join(dir, entry.name);
+            try {
+              const files = fs.readdirSync(fullPath);
+              const pdfCount = files.filter(f => f.toLowerCase().endsWith('.pdf')).length;
+              results.push({
+                name: entry.name,
+                path: fullPath,
+                children: getSubfolders(fullPath),
+                pdfCount
+              });
+            } catch {
+              // Skip inaccessible folders
+            }
+          }
+        }
+      } catch {
+        // Skip if directory can't be read
+      }
+      return results;
+    };
+
+    const tree = getSubfolders(targetPath);
+    return { success: true, tree, rootPath: targetPath };
+  });
+
+  ipcMain.handle('open-pdf', async (_event, filePath: string) => {
+    console.log('open-pdf called with path:', filePath);
+    console.log('fs.existsSync result:', fs.existsSync(filePath));
+    
+    // Try to open regardless of existsSync (Google Drive paths may have issues)
+    try {
+      const result = await shell.openPath(filePath);
+      console.log('shell.openPath result:', result);
+      if (result === '') {
+        return { success: true };
+      }
+      return { success: false, error: result };
+    } catch (e) {
+      console.error('shell.openPath error:', e);
+      return { success: false, error: String(e) };
+    }
   });
 
   ipcMain.handle('prune-orphans', async () => {
@@ -692,16 +828,79 @@ app.whenReady().then(async () => {
     }
   });
 
+  // Prepare context when entering chat mode (before first message)
+  ipcMain.handle('prepare-context', async (_event, filePath: string) => {
+    try {
+        console.log(`🔍 Preparing context for ${path.basename(filePath)}`);
+        
+        const article = await getDb().select({
+            id: articles.id,
+            pdfContext: articles.pdfContext
+        }).from(articles).where(eq(articles.filePath, filePath)).get();
+
+        if (article?.pdfContext) {
+            console.log(`📦 Context already cached for ${path.basename(filePath)}`);
+            win?.webContents.send('chat-context-status', { status: 'cached', message: 'Context ready (cached)' });
+            return { success: true, cached: true };
+        } else {
+            console.log(`⏳ Extracting context for ${path.basename(filePath)}...`);
+            win?.webContents.send('chat-context-status', { status: 'extracting', message: 'Extracting PDF text...' });
+            
+            const text = await extractText(filePath);
+            console.log(`   Extracted ${text.length} chars`);
+            
+            if (article && text.length > 0) {
+                await getDb().update(articles)
+                    .set({ pdfContext: text })
+                    .where(eq(articles.id, article.id));
+                console.log(`💾 Cached context for ${path.basename(filePath)}`);
+            }
+            
+            win?.webContents.send('chat-context-status', { status: 'ready', message: 'Context ready' });
+            return { success: true, cached: false };
+        }
+    } catch (error) {
+        console.error("Prepare context error:", error);
+        win?.webContents.send('chat-context-status', { status: 'error', message: String(error) });
+        return { success: false, error: String(error) };
+    }
+  });
+
   ipcMain.handle('chat-paper', async (_event, { filePath, messages }) => {
     try {
         console.log(`💬 Chat request for ${path.basename(filePath)}`);
         
-        // 1. Extract text (cached or fresh)
-        // Note: extractText already caches somewhat by virtue of OS/FS, but we could improve this.
-        // For now, re-extracting is usually fast enough for text-based PDFs.
-        const text = await extractText(filePath);
-        console.log(`Debug: Extracted text length: ${text.length}`);
-        console.log(`Debug: Text preview: ${text.substring(0, 200)}...`);
+        // 1. Check for cached context in DB
+        const article = await getDb().select({
+            id: articles.id,
+            pdfContext: articles.pdfContext
+        }).from(articles).where(eq(articles.filePath, filePath)).get();
+
+        let text: string;
+        
+        if (article?.pdfContext) {
+            // Cache hit
+            console.log(`📦 Cache HIT for ${path.basename(filePath)}`);
+            win?.webContents.send('chat-context-status', { status: 'cached', message: 'Using cached context' });
+            text = article.pdfContext;
+        } else {
+            // Cache miss - extract and save
+            console.log(`⏳ Cache MISS for ${path.basename(filePath)}, extracting...`);
+            win?.webContents.send('chat-context-status', { status: 'extracting', message: 'Extracting PDF text...' });
+            
+            text = await extractText(filePath);
+            console.log(`   Extracted ${text.length} chars`);
+            
+            // Save to cache
+            if (article && text.length > 0) {
+                await getDb().update(articles)
+                    .set({ pdfContext: text })
+                    .where(eq(articles.id, article.id));
+                console.log(`💾 Cached context for ${path.basename(filePath)}`);
+            }
+            
+            win?.webContents.send('chat-context-status', { status: 'ready', message: 'Context ready' });
+        }
         
         // 2. Send to LLM
         const response = await chatWithPaper(text, messages);
@@ -709,6 +908,7 @@ app.whenReady().then(async () => {
         return { success: true, response };
     } catch (error) {
         console.error("Chat error:", error);
+        win?.webContents.send('chat-context-status', { status: 'error', message: String(error) });
         return { success: false, error: String(error) };
     }
   });

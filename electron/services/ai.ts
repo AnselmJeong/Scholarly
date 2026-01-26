@@ -1,11 +1,24 @@
 // Ollama AI Service for keyword extraction
 
 const OLLAMA_BASE_URL = 'http://localhost:11434';
-let modelName = 'nemotron-3-nano:30b-cloud'; // Default model
+let keywordModel = 'nemotron-3-nano:30b-cloud'; // Default for keywords
+let chatModel = 'nemotron-3-nano:30b-cloud';    // Default for chat
 
+// Legacy support
 export function setModel(name: string) {
-    modelName = name;
-    console.log(`AI model set to: ${modelName}`);
+    keywordModel = name;
+    chatModel = name;
+    console.log(`AI models set to: ${name}`);
+}
+
+export function setKeywordModel(name: string) {
+    keywordModel = name;
+    console.log(`Keyword AI model set to: ${name}`);
+}
+
+export function setChatModel(name: string) {
+    chatModel = name;
+    console.log(`Chat AI model set to: ${name}`);
 }
 
 export async function extractKeywords(text: string, existingKeywords: string[], retryCount: number = 0): Promise<{ existing: string[], new: string[] }> {
@@ -35,7 +48,7 @@ Paper text:
 ${truncatedText}`;
 
     try {
-        console.log(`Calling Ollama (${modelName}) for keyword extraction...`);
+        console.log(`Calling Ollama (${keywordModel}) for keyword extraction...`);
         
         const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
             method: 'POST',
@@ -43,7 +56,7 @@ ${truncatedText}`;
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: modelName,
+                model: keywordModel,
                 prompt: prompt,
                 stream: false,
                 options: {
@@ -199,12 +212,12 @@ export async function chatWithPaper(
     ];
 
     try {
-        console.log(`Sending chat request to Ollama (${modelName})...`);
+        console.log(`Sending chat request to Ollama (${chatModel})...`);
         const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: modelName,
+                model: chatModel,
                 messages: fullMessages,
                 stream: false, // For now, we'll do non-streaming for simplicity
                 options: {

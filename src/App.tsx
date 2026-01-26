@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Sidebar } from '@/components/Sidebar'
+import { SidebarTabs } from '@/components/SidebarTabs'
 import { ArticleList } from '@/components/ArticleList'
 import { ArticleDetail } from '@/components/ArticleDetail'
 import { SettingsModal } from '@/components/SettingsModal'
@@ -21,6 +21,7 @@ interface Article {
     addedDate: string | Date | null;
     hasGuidance?: boolean;
     isKey?: number | boolean;
+    isRead?: number | boolean;
 }
 
 interface Keyword {
@@ -43,12 +44,13 @@ function App() {
   const [selectedKeywordIds, setSelectedKeywordIds] = useState<number[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [rootPath, setRootPath] = useState<string | null>(null);
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [articleKeywords, setArticleKeywords] = useState<string[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<boolean | null>(null);
   
   // Settings state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [currentModel, setCurrentModel] = useState('nemotron-3-nano:30b-cloud');
+
 
   // Scan progress state
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, filename: '', isScanning: false });
@@ -57,6 +59,9 @@ function App() {
   const [centerTab, setCenterTab] = useState<'list' | 'guidance'>('list');
   const [guidanceContent, setGuidanceContent] = useState<string>('');
   const [guidanceTitle, setGuidanceTitle] = useState<string>('');
+  
+  // App Loading State
+  const [isLoading, setIsLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
       try {
@@ -71,6 +76,8 @@ function App() {
           setLinks(linksData || []);
       } catch (e) {
           console.error("Failed to fetch data", e);
+      } finally {
+          setIsLoading(false);
       }
   }, []);
 
@@ -92,6 +99,7 @@ function App() {
     };
 
     window.ipcRenderer.on('data-updated', handleUpdate);
+    window.ipcRenderer.on('db-ready', handleUpdate);
 
     // Listen for scan progress
     const handleScanProgress = (_event: unknown, data: { current: number; total: number; filename: string; isScanning: boolean }) => {
@@ -150,9 +158,14 @@ function App() {
             (a.title && a.title.toLowerCase().includes(lowerFilter))
         );
     }
+
+    // 3. Folder Filter
+    if (selectedFolderPath) {
+        result = result.filter(a => a.filePath.startsWith(selectedFolderPath));
+    }
     
     return result;
-  }, [articles, links, selectedKeywordIds, filenameFilter]);
+  }, [articles, links, selectedKeywordIds, filenameFilter, selectedFolderPath]);
 
   const filteredKeywords = useMemo(() => {
     const currentArticleIds = filteredArticles.map(a => a.id);
@@ -208,7 +221,10 @@ function App() {
 
     setIsProcessing(true);
     try {
-        const result = await window.ipcRenderer.invoke('process-file', article.filePath);
+        const result = await window.ipcRenderer.invoke('process-file', {
+            filePath: article.filePath,
+            force: true // UI triggered scan should always force update
+        });
         if (result.success) {
             fetchData();
             const kws = await window.ipcRenderer.invoke('get-article-keywords', selectedArticleId);
@@ -279,6 +295,7 @@ function App() {
   };
 
   const handleOpenPdf = async (filename?: string) => {
+    console.log('handleOpenPdf called with filename:', filename, 'selectedArticleId:', selectedArticleId);
     let targetArticle = null;
     
     if (filename) {
@@ -287,8 +304,13 @@ function App() {
       targetArticle = articles.find(a => a.id === selectedArticleId);
     }
 
+    console.log('targetArticle:', targetArticle);
     if (targetArticle) {
-        await window.ipcRenderer.invoke('open-pdf', targetArticle.filePath);
+        console.log('Invoking open-pdf with path:', targetArticle.filePath);
+        const result = await window.ipcRenderer.invoke('open-pdf', targetArticle.filePath);
+        console.log('open-pdf result:', result);
+    } else {
+        console.log('No target article found');
     }
   };
 
@@ -329,6 +351,17 @@ function App() {
     }
   };
 
+  const handleToggleRead = async (articleId: number, isRead: boolean) => {
+    try {
+      const result = await window.ipcRenderer.invoke('toggle-read-article', { articleId, isRead });
+      if (result.success) {
+        fetchData();
+      }
+    } catch (e) {
+      console.error("Error toggling read status:", e);
+    }
+  };
+
   const handleSelectRoot = async () => {
     const path = await window.ipcRenderer.invoke('select-root-folder');
     if (path) {
@@ -336,17 +369,22 @@ function App() {
     }
   };
 
-  const handleModelChange = async (model: string) => {
-    try {
-      await window.ipcRenderer.invoke('set-model', model);
-      setCurrentModel(model);
-    } catch (e) {
-      console.error('Failed to change model', e);
-    }
-  };
+
 
   const selectedArticle = articles.find(a => a.id === selectedArticleId) || null;
   const allKeywordNames = keywords.map(k => k.keyword);
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-white flex-col gap-4 animate-in fade-in duration-500">
+        <div className="relative">
+            <div className="w-10 h-10 rounded-full border-2 border-slate-800"></div>
+            <div className="absolute top-0 left-0 w-10 h-10 rounded-full border-2 border-blue-500 border-t-transparent animate-spin"></div>
+        </div>
+        <div className="text-sm text-slate-400 font-medium tracking-wide animate-pulse">Initializing Scholarly...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 font-sans relative">
@@ -361,13 +399,15 @@ function App() {
        
        <ResizablePanels
          leftPanel={
-           <Sidebar 
+           <SidebarTabs 
              keywords={filteredKeywords} 
              selectedKeywordIds={selectedKeywordIds} 
              onSelectKeyword={handleSelectKeyword}
              onSelectRootFolder={handleSelectRoot}
              onOpenSettings={() => setIsSettingsOpen(true)}
              rootPath={rootPath}
+             selectedFolderPath={selectedFolderPath}
+             onSelectFolderPath={setSelectedFolderPath}
            />
          }
          centerPanel={
@@ -381,9 +421,11 @@ function App() {
                  onOpenPdf={(filename) => handleOpenPdf(filename)}
                  onOpenGuidance={handleOpenGuidance}
                  onToggleKey={handleToggleKey}
+                  onToggleRead={handleToggleRead}
                  searchTerm={filenameFilter}
                  onSearchChange={setFilenameFilter}
                  onRescan={handlePruneOrphans}
+                 onSelectFolder={handleSelectRoot}
                />
            ) : (
                <GuidanceViewer 
@@ -416,8 +458,6 @@ function App() {
        <SettingsModal 
          isOpen={isSettingsOpen}
          onClose={() => setIsSettingsOpen(false)}
-         currentModel={currentModel}
-         onModelChange={handleModelChange}
        />
 
        <ScanProgress 

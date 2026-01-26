@@ -50,6 +50,7 @@ export function ArticleDetail({
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant', content: string }>>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [contextStatus, setContextStatus] = useState<{ status: string; message: string } | null>(null);
   
   const keywordInputRef = useRef<HTMLInputElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
@@ -61,7 +62,32 @@ export function ArticleDetail({
     setMessages([]);
     setInputMessage('');
     setIsChatLoading(false);
+    setContextStatus(null);
   }, [article?.id]);
+
+  // Listen for context status updates
+  useEffect(() => {
+    const handleContextStatus = (_event: unknown, data: { status: string; message: string }) => {
+      setContextStatus(data);
+      // Auto-clear after 3 seconds for non-extracting statuses
+      if (data.status !== 'extracting') {
+        setTimeout(() => setContextStatus(null), 3000);
+      }
+    };
+    
+    window.ipcRenderer.on('chat-context-status', handleContextStatus);
+    return () => {
+      window.ipcRenderer.off('chat-context-status', handleContextStatus);
+    };
+  }, []);
+
+  // Prepare context when entering chat mode
+  useEffect(() => {
+    if (isChatMode && article) {
+      // Trigger context preparation when chat mode is activated
+      window.ipcRenderer.invoke('prepare-context', article.filePath);
+    }
+  }, [isChatMode, article?.filePath]);
 
   // Auto-scroll to bottom of chat
   useEffect(() => {
@@ -167,6 +193,22 @@ export function ArticleDetail({
             {isChatMode ? (
                 // --- CHAT VIEW ---
                 <div className="flex flex-col h-full min-h-0">
+                    {/* Context Status Banner */}
+                    {contextStatus && (
+                        <div className={cn(
+                            "px-4 py-2 text-xs font-medium flex items-center gap-2 shrink-0 transition-all",
+                            contextStatus.status === 'extracting' && "bg-amber-500/10 text-amber-400 border-b border-amber-500/20",
+                            contextStatus.status === 'cached' && "bg-emerald-500/10 text-emerald-400 border-b border-emerald-500/20",
+                            contextStatus.status === 'ready' && "bg-blue-500/10 text-blue-400 border-b border-blue-500/20",
+                            contextStatus.status === 'error' && "bg-red-500/10 text-red-400 border-b border-red-500/20"
+                        )}>
+                            {contextStatus.status === 'extracting' && <span className="animate-spin">⏳</span>}
+                            {contextStatus.status === 'cached' && <span>📦</span>}
+                            {contextStatus.status === 'ready' && <span>✅</span>}
+                            {contextStatus.status === 'error' && <span>❌</span>}
+                            <span>{contextStatus.message}</span>
+                        </div>
+                    )}
                     <div 
                         ref={messageListRef}
                         className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4 min-h-0"
@@ -267,30 +309,80 @@ export function ArticleDetail({
                             {article.authors || 'Unknown Author'}
                         </div>
                         
-                        <div className="flex items-center gap-2 text-xs text-slate-400">
-                            {article.year && (
-                                <span className="px-2 py-0.5 rounded-full bg-slate-700/50 text-slate-300">
-                                    {article.year}
-                                </span>
-                            )}
-                            {article.journal && (
-                                <>
-                                    <span className="text-slate-600">•</span>
-                                    <span className="italic">
-                                        {article.journal}
+                        {/* Actions */}
+                        <div className="flex items-center gap-3 mb-2">
+                            <button
+                                onClick={onProcess}
+                                disabled={isProcessing}
+                                className={cn(
+                                    "text-[10px] font-bold px-2 py-1 rounded transition-all flex items-center gap-1",
+                                    isProcessing
+                                        ? "text-slate-600 bg-slate-800/50"
+                                        : "text-blue-400 hover:text-blue-300 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/10 hover:border-blue-500/20"
+                                )}
+                            >
+                                {isProcessing ? (
+                                    <>
+                                        <div className="w-2 h-2 rounded-full border border-current border-t-transparent animate-spin" />
+                                        SCANNING...
+                                    </>
+                                ) : (
+                                    <>
+                                        <span>✨</span> AI RE-SCAN
+                                    </>
+                                )}
+                            </button>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5 mb-6">
+                            <div className="flex items-center gap-2 text-xs text-slate-400">
+                                {article.year && (
+                                    <span className="px-2 py-0.5 rounded-full bg-slate-700/50 text-slate-300">
+                                        {article.year}
                                     </span>
-                                </>
-                            )}
+                                )}
+                                {article.journal && (
+                                    <>
+                                        <span className="text-slate-600">•</span>
+                                        <span className="italic">
+                                            {article.journal}
+                                        </span>
+                                    </>
+                                )}
+                            </div>
+                            
                             {article.doi && (
-                                <>
-                                    <span className="text-slate-600">•</span>
-                                    <span className="font-mono text-slate-500 hover:text-blue-400 cursor-pointer" onClick={() => {
-                                        // We could add a handler here later
-                                    }}>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold text-slate-500 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50 tracking-wider">DOI</span>
+                                    <a
+                                        href={`https://doi.org/${article.doi}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs font-mono text-blue-400 hover:text-blue-300 hover:underline transition-colors truncate"
+                                        title={`Open https://doi.org/${article.doi}`}
+                                    >
                                         {article.doi}
-                                    </span>
-                                </>
+                                    </a>
+                                </div>
                             )}
+                        </div>
+
+                        {/* File Path */}
+                        <div className="mt-2 pt-3 border-t border-slate-700/30">
+                            <button
+                                onClick={() => {
+                                    console.log('📁 File path clicked, calling onOpenPdf');
+                                    onOpenPdf();
+                                }}
+                                className="text-xs text-slate-500 hover:text-blue-400 transition-colors flex items-center gap-2 group max-w-full"
+                                title={article.filePath}
+                            >
+                                <span>📁</span>
+                                <span className="truncate group-hover:underline">
+                                    {article.filePath}
+                                </span>
+                                <span className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">↗</span>
+                            </button>
                         </div>
                     </div>
 
@@ -307,24 +399,11 @@ export function ArticleDetail({
                     )}
 
                     {/* Keywords Section */}
+                    {/* Keywords Section */}
                     <div className="mb-8">
-                        <div className="flex justify-between items-center mb-3">
-                            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                Keywords
-                            </h3>
-                            <button 
-                                onClick={onProcess}
-                                disabled={isProcessing}
-                                className={cn(
-                                    "text-[10px] font-bold px-2 py-1 rounded transition-all flex items-center gap-1",
-                                    isProcessing 
-                                        ? "text-slate-600 bg-slate-800/50" 
-                                        : "text-blue-400 hover:text-blue-300 bg-blue-500/5 hover:bg-blue-500/10"
-                                )}
-                            >
-                                {isProcessing ? "SCANNING..." : "✨ AI RE-SCAN"}
-                            </button>
-                        </div>
+                        <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
+                            Keywords
+                        </h3>
                         
                         {/* Manual Add */}
                         <form onSubmit={handleAdd} className="mb-4">
