@@ -48,6 +48,12 @@ export function ArticleDetail({
     onToggleRead,
     isProcessing 
 }: ArticleDetailProps) {
+  interface ChatSession {
+      id: number;
+      title: string;
+      updatedDate: string;
+  }
+
   interface ChatMessage {
       role: 'user' | 'assistant';
       content: string;
@@ -58,6 +64,8 @@ export function ArticleDetail({
   const [newKeyword, setNewKeyword] = useState('');
   const [isChatMode, setIsChatMode] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
   const [inputMessage, setInputMessage] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [contextStatus, setContextStatus] = useState<{ status: string; message: string } | null>(null);
@@ -70,10 +78,54 @@ export function ArticleDetail({
   useEffect(() => {
     setIsChatMode(false);
     setMessages([]);
+    setSessions([]);
+    setCurrentSessionId(null);
     setInputMessage('');
     setIsChatLoading(false);
     setContextStatus(null);
   }, [article?.id]);
+
+  // Load Sessions when entering chat mode
+  useEffect(() => {
+    if (isChatMode && article) {
+      window.ipcRenderer.invoke('prepare-context', article.filePath);
+      loadSessions();
+    }
+  }, [isChatMode, article?.id]);
+
+  const loadSessions = async () => {
+    if (!article) return;
+    const result = await window.ipcRenderer.invoke('get-chat-sessions', article.id);
+    if (result.success) {
+        setSessions(result.sessions);
+        if (result.sessions.length > 0 && !currentSessionId) {
+            // Load most recent session
+            selectSession(result.sessions[0].id);
+        } else if (result.sessions.length === 0) {
+            // Create New Chat automatically
+            createNewSession();
+        }
+    }
+  };
+
+  const createNewSession = async () => {
+      if (!article) return;
+      const title = `Chat ${new Date().toLocaleDateString()}`;
+      const result = await window.ipcRenderer.invoke('create-chat-session', article.id, title);
+      if (result.success) {
+          setSessions(prev => [result.session, ...prev]);
+          setCurrentSessionId(result.session.id);
+          setMessages([]);
+      }
+  };
+
+  const selectSession = async (sessionId: number) => {
+      setCurrentSessionId(sessionId);
+      const result = await window.ipcRenderer.invoke('load-chat-messages', sessionId);
+      if (result.success) {
+          setMessages(result.messages);
+      }
+  };
 
   // Listen for context status updates
   useEffect(() => {
@@ -90,14 +142,6 @@ export function ArticleDetail({
       window.ipcRenderer.off('chat-context-status', handleContextStatus);
     };
   }, []);
-
-  // Prepare context when entering chat mode
-  useEffect(() => {
-    if (isChatMode && article) {
-      // Trigger context preparation when chat mode is activated
-      window.ipcRenderer.invoke('prepare-context', article.filePath);
-    }
-  }, [isChatMode, article?.filePath]);
 
   // Auto-scroll to bottom of chat
   useEffect(() => {
@@ -128,7 +172,7 @@ export function ArticleDetail({
 
   // Core send logic
   const sendMessage = async (text: string, displayLabel?: string) => {
-      if (isChatLoading || !article) return;
+      if (isChatLoading || !article || !currentSessionId) return;
       
       const newMessage: ChatMessage = { 
           role: 'user', 
@@ -136,11 +180,15 @@ export function ArticleDetail({
           label: displayLabel 
       };
       
+      // Optimistic update
       setMessages(prev => [...prev, newMessage]);
       setIsChatLoading(true);
 
       try {
-          // Send only role and content to backend (sanitize)
+          // 1. Save User Message to DB
+          await window.ipcRenderer.invoke('save-chat-message', currentSessionId, 'user', text, displayLabel);
+
+          // 2. Prepare history for LLM (exclude labels/metadata if needed, but we just strip to role/content)
           const historyForLLM = messages.map(({ role, content }) => ({ role, content }));
           
           const result = await window.ipcRenderer.invoke('chat-paper', {
@@ -149,7 +197,10 @@ export function ArticleDetail({
           });
 
           if (result.success) {
-              setMessages(prev => [...prev, { role: 'assistant', content: result.response }]);
+              const assistantMsg = result.response;
+              setMessages(prev => [...prev, { role: 'assistant', content: assistantMsg }]);
+              // 3. Save Assistant Message to DB
+              await window.ipcRenderer.invoke('save-chat-message', currentSessionId, 'assistant', assistantMsg);
           } else {
               setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${result.error}` }]);
           }
@@ -157,6 +208,17 @@ export function ArticleDetail({
           setMessages(prev => [...prev, { role: 'assistant', content: "Failed to send message: " + String(err) }]);
       } finally {
           setIsChatLoading(false);
+      }
+  };
+
+  const handleCopyMessage = (content: string) => {
+      navigator.clipboard.writeText(content);
+      // Optional: Show toast
+  };
+
+  const handleExportChat = async () => {
+      if (currentSessionId) {
+        await window.ipcRenderer.invoke('export-chat-history', currentSessionId);
       }
   };
 
@@ -236,6 +298,35 @@ export function ArticleDetail({
             {isChatMode ? (
                 // --- CHAT VIEW ---
                 <div className="flex flex-col h-full min-h-0">
+                    {/* Chat Session Header */}
+                    <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700/50 bg-slate-900/30">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                            <select 
+                                value={currentSessionId || ''} 
+                                onChange={(e) => selectSession(Number(e.target.value))}
+                                className="bg-slate-800 text-xs rounded border border-slate-700 text-slate-300 p-1 max-w-[200px]"
+                            >
+                                {sessions.map(s => (
+                                    <option key={s.id} value={s.id}>{s.title}</option>
+                                ))}
+                            </select>
+                            <button 
+                                onClick={createNewSession}
+                                className="p-1 hover:bg-slate-700/50 rounded text-slate-400 hover:text-emerald-400 transition-colors"
+                                title="New Chat"
+                            >
+                                ➕
+                            </button>
+                        </div>
+                        <button 
+                            onClick={handleExportChat}
+                            className="text-xs text-slate-500 hover:text-blue-400 flex items-center gap-1 transition-colors"
+                            title="Export to Markdown"
+                        >
+                            <span>📥</span> Export
+                        </button>
+                    </div>
+
                     {/* Context Status Banner */}
                     {contextStatus && (
                         <div className={cn(
@@ -266,11 +357,11 @@ export function ArticleDetail({
                         
                         {messages.map((msg, idx) => (
                             <div key={idx} className={cn(
-                                "flex flex-col max-w-[85%]",
+                                "flex flex-col max-w-[85%] group relative",
                                 msg.role === 'user' ? "self-end items-end" : "self-start items-start"
                             )}>
                                 <div className={cn(
-                                    "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm prose prose-sm max-w-none break-words",
+                                    "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm prose prose-sm max-w-none break-words relative",
                                     msg.role === 'user' 
                                         ? "bg-blue-600 text-white rounded-br-none prose-invert prose-p:text-white prose-headings:text-white prose-strong:text-white prose-em:text-white prose-code:text-white prose-code:bg-white/20 prose-pre:bg-black/20 prose-pre:text-white prose-a:text-white/90 prose-li:text-white prose-ul:my-2 prose-ol:my-2 prose-hr:border-white/20 prose-blockquote:border-white/30 prose-blockquote:text-white/90" 
                                         : "bg-slate-700/80 text-slate-200 rounded-bl-none border border-slate-600/50 prose-invert prose-p:text-slate-200 prose-a:text-blue-400 prose-code:bg-slate-800 prose-code:px-1 prose-code:rounded prose-pre:bg-slate-900 prose-pre:rounded-lg prose-p:my-1 prose-headings:my-2 prose-ul:my-2 prose-li:my-0.5"
@@ -302,9 +393,26 @@ export function ArticleDetail({
                                         </Markdown>
                                     )}
                                 </div>
-                                <span className="text-[10px] text-slate-500 mt-1 px-1">
-                                    {msg.role === 'user' ? 'You' : 'AI Assistant'}
-                                </span>
+                                <div className={cn(
+                                    "flex items-center gap-2 mt-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity",
+                                    msg.role === 'user' ? "flex-row-reverse" : "flex-row"
+                                )}>
+                                    <span className="text-[10px] text-slate-500">
+                                        {msg.role === 'user' ? 'You' : 'AI Assistant'}
+                                    </span>
+                                    {!msg.label && (
+                                        <button 
+                                            onClick={() => handleCopyMessage(msg.content)}
+                                            className="text-slate-500 hover:text-white p-0.5 rounded hover:bg-slate-700/50 transition-colors"
+                                            title="Copy message"
+                                        >
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                            </svg>
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         ))}
                         

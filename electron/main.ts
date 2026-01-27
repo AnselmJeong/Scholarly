@@ -8,7 +8,7 @@ import { loadSettings, saveSettings, AppSettings } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
 import { generateBibtexForArticles } from './services/bibtex'
 import { fetchPaperMetadata } from './services/openalex'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, asc, desc } from 'drizzle-orm'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import archiver from 'archiver'
@@ -965,4 +965,119 @@ app.whenReady().then(async () => {
         return { success: false, error: String(error) };
     }
   });
+});
+// --- CHAT SESSION HANDLERS ---
+
+import { chatSessions, chatMessages } from './db/schema';
+
+ipcMain.handle('create-chat-session', async (_event, articleId: number, title?: string) => {
+  try {
+    const newSession = await getDb().insert(chatSessions).values({
+      articleId,
+      title: title || 'New Chat',
+    }).returning();
+    return { success: true, session: newSession[0] };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('get-chat-sessions', async (_event, articleId: number) => {
+  try {
+    const sessions = await getDb().select()
+      .from(chatSessions)
+      .where(eq(chatSessions.articleId, articleId))
+      .orderBy(desc(chatSessions.updatedDate)); // Most recent first
+    return { success: true, sessions };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('delete-chat-session', async (_event, sessionId: number) => {
+  try {
+    await getDb().delete(chatSessions).where(eq(chatSessions.id, sessionId));
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('update-session-title', async (_event, sessionId: number, title: string) => {
+  try {
+    await getDb().update(chatSessions)
+      .set({ title, updatedDate: new Date() })
+      .where(eq(chatSessions.id, sessionId));
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('load-chat-messages', async (_event, sessionId: number) => {
+  try {
+    const msgs = await getDb().select()
+      .from(chatMessages)
+      .where(eq(chatMessages.sessionId, sessionId))
+      .orderBy(asc(chatMessages.createdDate));
+    return { success: true, messages: msgs };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('save-chat-message', async (_event, sessionId: number, role: 'user' | 'assistant', content: string, label?: string) => {
+  try {
+    const saved = await getDb().insert(chatMessages).values({
+      sessionId,
+      role,
+      content,
+      label
+    }).returning();
+    
+    // Also update session updated_date
+    await getDb().update(chatSessions)
+      .set({ updatedDate: new Date() })
+      .where(eq(chatSessions.id, sessionId));
+
+    return { success: true, message: saved[0] };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('export-chat-history', async (_event, sessionId: number) => {
+  try {
+    // 1. Fetch data
+    const [session] = await getDb().select().from(chatSessions).where(eq(chatSessions.id, sessionId));
+    const msgs = await getDb().select()
+      .from(chatMessages)
+      .where(eq(chatMessages.sessionId, sessionId))
+      .orderBy(asc(chatMessages.createdDate));
+
+    if (!session) throw new Error("Session not found");
+
+    // 2. Format Markdown
+    let mdContent = `# ${session.title}\n\nDate: ${new Date().toLocaleString()}\n\n---\n\n`;
+    
+    for (const m of msgs) {
+      const roleDisplay = m.role === 'user' ? '## User' : '## Assistant';
+      mdContent += `${roleDisplay}\n\n${m.content}\n\n`;
+    }
+
+    // 3. Save dialog
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Export Chat History',
+      defaultPath: `${session.title || 'chat-export'}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }]
+    });
+
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    fs.writeFileSync(filePath, mdContent);
+    return { success: true, filePath };
+
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
 });

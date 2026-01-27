@@ -100,5 +100,28 @@ export function initDB() {
     );
     `);
 
+    run(`
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        article_id INTEGER,
+        title TEXT DEFAULT 'New Chat',
+        created_date INTEGER,
+        updated_date INTEGER,
+        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+    );
+    `);
+
+    run(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        label TEXT,
+        created_date INTEGER,
+        FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+    );
+    `);
+
     console.log('Database initialized');
 }

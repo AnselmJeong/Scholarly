@@ -35,3 +35,20 @@ export const articleKeywords = sqliteTable('article_keywords', {
 }, (t) => ({
   pk: primaryKey({ columns: [t.articleId, t.keywordId] })
 }));
+
+export const chatSessions = sqliteTable('chat_sessions', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  articleId: integer('article_id').references(() => articles.id, { onDelete: 'cascade' }),
+  title: text('title').default("New Chat"),
+  createdDate: integer('created_date', { mode: 'timestamp' }).default(sql`CURRENT_TIMESTAMP`),
+  updatedDate: integer('updated_date', { mode: 'timestamp' }).default(sql`CURRENT_TIMESTAMP`)
+});
+
+export const chatMessages = sqliteTable('chat_messages', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  sessionId: integer('session_id').references(() => chatSessions.id, { onDelete: 'cascade' }),
+  role: text('role').notNull(), // 'user' | 'assistant'
+  content: text('content').notNull(),
+  label: text('label'), // Optional label for hidden prompts
+  createdDate: integer('created_date', { mode: 'timestamp' }).default(sql`CURRENT_TIMESTAMP`)
+});
