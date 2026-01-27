@@ -6,15 +6,13 @@ const SETTINGS_FILE = 'settings.json';
 
 export interface AppSettings {
   ai: {
-    keywordModel: string;
     chatModel: string;
   };
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   ai: {
-    keywordModel: 'nemotron-3-nano:30b-cloud',
-    chatModel: 'nemotron-3-nano:30b-cloud'
+    chatModel: 'mistral-large-3:675b-cloud'
   }
 };
 

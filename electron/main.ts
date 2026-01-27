@@ -3,17 +3,16 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
-import { extractText } from './services/pdf'
-import { checkOllamaStatus, listModels, setModel, chatWithPaper, setKeywordModel, setChatModel } from './services/ai'
-import { processKeywords } from './services/keywordPipeline'
-import { initLanceDB } from './db/lancedb'
+import { checkOllamaStatus, listModels, setModel, chatWithPaper, setChatModel } from './services/ai'
 import { loadSettings, saveSettings, AppSettings } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
-import { generateBibtexForArticles, searchCrossref } from './services/crossref'
-import { eq, and } from 'drizzle-orm'
+import { generateBibtexForArticles } from './services/bibtex'
+import { fetchPaperMetadata } from './services/openalex'
+import { eq, and, sql } from 'drizzle-orm'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import archiver from 'archiver'
+import { extractText } from './services/pdf'
 
 // Disable Hardware Acceleration to prevent GPU process crashes and startup delay
 app.disableHardwareAcceleration();
@@ -23,6 +22,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Map to track recently deleted files for move detection (hash -> {path, timestamp})
 const recentlyDeletedFiles = new Map<string, { path: string; articleId: number; timestamp: number }>()
 const MOVE_DETECTION_TIMEOUT = 3000 // 3 seconds window to detect file moves
+
+// In-memory cache for PDF text content (filePath -> text)
+// We no longer store full text in DB to save space
+const pdfContextCache = new Map<string, string>();
+const PDF_CACHE_SIZE_LIMIT = 20; // Keep last 20 papers in memory
 
 // Calculate file hash for move detection
 function calculateFileHash(filePath: string): Promise<string> {
@@ -101,7 +105,7 @@ app.on('activate', () => {
   }
 })
 
-// Process a single file: extract text, get keywords, save to DB
+// Process a single file: fetch metadata from OpenAlex, save keywords to DB
 async function processFile(filePath: string, force: boolean = false): Promise<void> {
   const filename = path.basename(filePath);
   console.log(`\n📄 Processing: ${filename} (Force: ${force})`);
@@ -114,138 +118,113 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
       return;
     }
     
-    const hasRichMetadata = article.doi && article.abstract && article.journal;
-    const needsMetadataUpdate = force || !article.title || article.title === filename || !article.authors || 
-                               (article.title && article.title.includes('.pdf')) ||
-                               !hasRichMetadata;
+    // Check if we need to update metadata
+    // We update if: force=true OR no/default title OR missing explicit metadata fields like DOI/Authors
+    const hasRichMetadata = !!article.doi && !!article.authors && !!article.year;
+    const isDefaultTitle = !article.title || article.title === filename || article.title.includes('.pdf');
+    
+    const needsMetadataUpdate = force || isDefaultTitle || !hasRichMetadata;
 
     // Improve search accuracy by using parsed title if available
     const parsed = parseFilename(filename);
-    const searchTitle = article.title && article.title !== filename 
+    const searchTitle = article.title && !isDefaultTitle
       ? article.title 
       : (parsed.title && parsed.title !== filename.replace(/\.pdf$/i, '') ? parsed.title : filename.replace(/\.pdf$/i, ''));
     
     console.log(`\n   [ProcessFile] Metadata Check:`);
     console.log(`   - File: ${filename}`);
-    console.log(`   - Current Title: "${article.title}"`);
-    console.log(`   - Parsed Title: "${parsed.title}"`);
     console.log(`   - Search Title: "${searchTitle}"`);
-    console.log(`   - Authors: "${article.authors}"`);
     console.log(`   - Needs Update: ${needsMetadataUpdate} (Force: ${force})`);
 
     if (needsMetadataUpdate) {
       try {
-        console.log(`   🔍 Searching Crossref for metadata: ${searchTitle}`);
-        const metadata = await searchCrossref(searchTitle);
+        console.log(`   🔍 Searching OpenAlex for metadata: ${searchTitle}`);
+        // Pass existing DOI if available to help OpenAlex lookup
+        const metadata = await fetchPaperMetadata(searchTitle, article.doi || undefined);
   
         if (metadata) {
-          console.log(`   ✅ Found Crossref data: ${metadata.title?.[0]}`);
+          console.log(`   ✅ Found OpenAlex data: ${metadata.title}`);
           
           // Prepare updates
           const updates: any = {};
           
-          if (metadata.title && metadata.title.length > 0) {
-            updates.title = metadata.title[0];
-          }
-          
-          if (metadata.author && metadata.author.length > 0) {
-            updates.authors = metadata.author.map(a => `${a.family}, ${a.given}`).join('; ');
-          }
-          
-          if (metadata.issued?.['date-parts']?.[0]?.[0]) {
-            updates.year = metadata.issued['date-parts'][0][0];
-          }
-          
-          if (metadata['container-title'] && metadata['container-title'].length > 0) {
-            updates.journal = metadata['container-title'][0];
-          }
-          
-          if (metadata.DOI) {
-            updates.doi = metadata.DOI;
-          }
-          
-          if (metadata.abstract) {
-            // Clean abstract (remove HTML tags)
-            updates.abstract = metadata.abstract.replace(/<[^>]*>/g, '').trim();
-          }
+          if (metadata.title) updates.title = metadata.title;
+          if (metadata.authors) updates.authors = metadata.authors;
+          if (metadata.year) updates.year = metadata.year;
+          if (metadata.journal) updates.journal = metadata.journal;
+          if (metadata.doi) updates.doi = metadata.doi;
+          if (metadata.abstract) updates.abstract = metadata.abstract;
 
           console.log(`   [ProcessFile] Prepared updates:`, JSON.stringify(updates));
-          console.log(`   [ProcessFile] Updates count: ${Object.keys(updates).length}`);
   
           // Update DB if we have data
           if (Object.keys(updates).length > 0) {
-            const result = await getDb().update(articles)
+            await getDb().update(articles)
               .set(updates)
-              .where(eq(articles.id, article.id))
-              .returning(); // Attempt to return modified rows if supported, or just wait
+              .where(eq(articles.id, article.id));
             
-            console.log(`   [ProcessFile] DB Update executed.`);
-            console.log(`   Updated article metadata from Crossref`);
+            console.log(`   [ProcessFile] DB Metadata Updated`);
             win?.webContents.send('data-updated');
             
             // Update local object for subsequent steps
             Object.assign(article, updates);
           }
+
+          // Process Keywords (NEW: directly from OpenAlex)
+          if (metadata.keywords && metadata.keywords.length > 0) {
+             console.log(`   🔑 Processing ${metadata.keywords.length} keywords from OpenAlex...`);
+             
+             for (const kw of metadata.keywords) {
+                // Check if keyword exists in SQLite (case-insensitive)
+                // Note: we don't have embeddings anymore, just text matching
+                const [existingKw] = await getDb().select().from(keywords).where(eq(keywords.keyword, kw));
+                
+                let keywordId: number;
+                
+                if (!existingKw) {
+                  // Insert new keyword
+                  await getDb().insert(keywords).values({
+                    keyword: kw,
+                    createdDate: new Date(),
+                    usageCount: 1
+                  }).onConflictDoNothing();
+                  
+                  // Fetch back to get ID (SQLite doesn't always support RETURNING perfectly in all drivers/wrappers)
+                  const [newKw] = await getDb().select().from(keywords).where(eq(keywords.keyword, kw));
+                  keywordId = newKw.id;
+                } else {
+                  keywordId = existingKw.id;
+                }
+                
+                // Link keyword to article
+                await getDb().insert(articleKeywords).values({
+                  articleId: article.id,
+                  keywordId: keywordId,
+                  addedDate: new Date()
+                }).onConflictDoNothing();
+                
+                // Update usage count
+                const [kwRow] = await getDb().select().from(keywords).where(eq(keywords.id, keywordId));
+                if (kwRow) {
+                     await getDb().update(keywords)
+                       .set({ usageCount: (kwRow.usageCount || 0) + 1 })
+                       .where(eq(keywords.id, keywordId));
+                }
+             }
+             
+             console.log(`   ✅ Saved keywords for ${filename}`);
+             win?.webContents.send('data-updated');
+           }
         } else {
-             console.log(`   ❌ No Crossref data found`);
+             console.log(`   ⚠️ No metadata found in OpenAlex for: "${searchTitle}"`);
         }
       } catch (err) {
         console.error('Error fetching metadata (ProcessFile):', err);
       }
     }
 
-    // 2. Keyword Extraction Check
-    // Check if article already has keywords (prevent duplicate processing)
-    if (!force) {
-        const existingLinks = await getDb().select().from(articleKeywords).where(eq(articleKeywords.articleId, article.id));
-        if (existingLinks.length > 0) {
-          console.log(`   Article already has ${existingLinks.length} keywords, skipping keyword extraction`);
-          return;
-        }
-    }
-    // ----------------------------------
-    
-    // Extract text from PDF
-    const text = await extractText(filePath);
-    console.log(`   Text extracted: ${text.length} chars`);
-    
-    // NEW: Use embedding-based keyword pipeline
-    const extractedKeywords = await processKeywords(text);
-    console.log(`   Keywords extracted:`, extractedKeywords.map(k => k.text));
-    
-    // Save keywords to SQLite DB and link to article
-    for (const { text: kw } of extractedKeywords) {
-      // Check if keyword exists in SQLite (case-insensitive)
-      const [existingKw] = await getDb().select().from(keywords).where(eq(keywords.keyword, kw));
-      
-      if (!existingKw) {
-        // Insert new keyword to SQLite
-        await getDb().insert(keywords).values({
-          keyword: kw,
-          createdDate: new Date(),
-          usageCount: 1
-        }).onConflictDoNothing();
-      }
-      
-      // Get keyword ID from SQLite
-      const [keywordRow] = await getDb().select().from(keywords).where(eq(keywords.keyword, kw));
-      if (keywordRow) {
-        // Link keyword to article
-        await getDb().insert(articleKeywords).values({
-          articleId: article.id,
-          keywordId: keywordRow.id,
-          addedDate: new Date()
-        }).onConflictDoNothing();
-        
-        // Update usage count
-        await getDb().update(keywords)
-          .set({ usageCount: (keywordRow.usageCount || 0) + 1 })
-          .where(eq(keywords.id, keywordRow.id));
-      }
-    }
-    
-    console.log(`   ✅ Saved ${extractedKeywords.length} keywords for ${filename}`);
-    win?.webContents.send('data-updated');
+    // PDF Text Extraction is now done ON-DEMAND during chat (prepare-context)
+    // We no longer save to DB to save space.
     
   } catch (error) {
     console.error(`   ❌ Error processing ${filename}:`, error);
@@ -253,37 +232,39 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
 }
 
 app.whenReady().then(async () => {
-  // Create Window IMMEDIATELY
+  try {
+    console.log("Starting DB initialization...");
+    const start = Date.now();
+    initDB();
+    console.log(`Database initialized in ${Date.now() - start}ms`);
+
+    // Cleanup legacy PDF context from DB to save space
+    getDb().update(articles).set({ pdfContext: null }).run();
+    try {
+      getDb().run(sql`VACUUM`); 
+      console.log('🧹 Cleared legacy PDF context and VACUUMed DB');
+    } catch (e) {
+      console.error('Vacuum failed:', e);
+    }
+    
+    // Load and apply settings
+    const settings = loadSettings();
+    console.log('Loaded settings:', settings);
+
+    if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
+
+  } catch (e) {
+    console.error("Failed to init DB:", e);
+    dialog.showErrorBox('Database Initialization Error', `Failed to initialize database: ${String(e)}`);
+  }
+
+  // Create Window after DB is ready
   createWindow();
 
-  // Defer heavy initialization to allow UI to render first
-  setTimeout(() => {
-    try {
-      console.log("Starting DB initialization...");
-      const start = Date.now();
-      initDB();
-      console.log(`Database initialized in ${Date.now() - start}ms`);
-      
-      // Initialize LanceDB for vector keyword storage
-      initLanceDB().then(() => {
-        console.log('LanceDB initialized for keyword embeddings');
-      }).catch((err) => {
-        console.error('Failed to init LanceDB:', err);
-      });
-      
-      win?.webContents.send('db-ready');
-      
-      // Load and apply settings
-      const settings = loadSettings();
-      console.log('Loaded settings:', settings);
-      if (settings.ai.keywordModel) setKeywordModel(settings.ai.keywordModel);
-      if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
-
-    } catch (e) {
-      console.error("Failed to init DB:", e);
-    }
-  }, 100);
-
+  win?.webContents.on('did-finish-load', () => {
+     win?.webContents.send('db-ready');
+  });
+  
   // Check Ollama status in background
   checkOllamaStatus().then(async (ollamaRunning) => {
     if (ollamaRunning) {
@@ -444,7 +425,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('save-settings', async (_event, settings: AppSettings) => {
     saveSettings(settings);
-    if (settings.ai.keywordModel) setKeywordModel(settings.ai.keywordModel);
+
     if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
     return true;
   });
@@ -515,12 +496,11 @@ app.whenReady().then(async () => {
         win?.webContents.send('scan-progress', { current: i + 1, total, filename, isScanning: true });
 
         try {
-          if (existingMap.has(fp)) {
+           if (existingMap.has(fp)) {
              const existing = existingMap.get(fp)!;
-             // Check if we have rich metadata (DOI, Abstract, Journal)
-             // We cast to any because typescript inference might lag until build, but we added columns above.
+             // DOI alone is sufficient - abstract/journal not always available from CrossRef
              const art = existing as any;
-             const hasRichMetadata = art.doi && art.abstract && art.journal;
+             const hasRichMetadata = !!art.doi;
              
              const needsUpdate = !existing.title || 
                                 existing.title === filename || 
@@ -530,7 +510,7 @@ app.whenReady().then(async () => {
 
              if (needsUpdate) {
                  console.log(`♻️  Re-processing existing file (metadata poor): ${filename}`);
-                 console.log(`    Missing: ${!art.doi ? 'DOI ' : ''}${!art.abstract ? 'Abstract ' : ''}${!art.journal ? 'Journal' : ''}`);
+                 console.log(`    Missing: ${!art.doi ? 'DOI' : ''}`);
                  // We must NOT await here blindly if there are many files, it will slow down startup massive time.
                  // But for now, user wants correctness. We can do it concurrently with a limit or just await.
                  // Given the user is debugging, await is safer to see logs.
@@ -850,30 +830,55 @@ app.whenReady().then(async () => {
     try {
         console.log(`🔍 Preparing context for ${path.basename(filePath)}`);
         
-        const article = await getDb().select({
+        let article = await getDb().select({
             id: articles.id,
-            pdfContext: articles.pdfContext
+            abstract: articles.abstract
         }).from(articles).where(eq(articles.filePath, filePath)).get();
 
-        if (article?.pdfContext) {
-            console.log(`📦 Context already cached for ${path.basename(filePath)}`);
-            win?.webContents.send('chat-context-status', { status: 'cached', message: 'Context ready (cached)' });
+        // Check in-memory cache first
+        let pdfText = pdfContextCache.get(filePath);
+
+        // LRU-like Logic: If we are adding new one and size is big, delete oldest keys? 
+        // Map preserves insertion order. We can delete first key if size > LIMIT.
+        
+        if (!pdfText) {
+             console.log(`   📄 Extracting text from PDF (On-Demand)...`);
+             try {
+                 const extracted = await extractText(filePath);
+                 if (extracted && extracted.length > 0) {
+                     pdfText = extracted;
+                     
+                     // Cache Management
+                     if (pdfContextCache.size >= PDF_CACHE_SIZE_LIMIT) {
+                         // Delete oldest entry
+                         const firstKey = pdfContextCache.keys().next().value;
+                         if (firstKey) pdfContextCache.delete(firstKey);
+                     }
+                     
+                     pdfContextCache.set(filePath, pdfText);
+                     console.log(`   ✅ Cached PDF text (${pdfText.length} chars). Cache size: ${pdfContextCache.size}`);
+                 }
+             } catch (e) {
+                 console.error("Extraction failed:", e);
+             }
+        } else {
+             console.log(`   ✅ Cache hit for ${path.basename(filePath)}`);
+             // Refresh LRU order (delete and set)
+             pdfContextCache.delete(filePath);
+             pdfContextCache.set(filePath, pdfText);
+        }
+
+        if (pdfText) {
+            console.log(`📦 Full text available in cache`);
+            win?.webContents.send('chat-context-status', { status: 'cached', message: 'Context ready (Full Text)' });
+            return { success: true, cached: true };
+        } else if (article?.abstract) {
+            console.log(`📦 Abstract available only`);
+            win?.webContents.send('chat-context-status', { status: 'cached', message: 'Context ready (Abstract only)' });
             return { success: true, cached: true };
         } else {
-            console.log(`⏳ Extracting context for ${path.basename(filePath)}...`);
-            win?.webContents.send('chat-context-status', { status: 'extracting', message: 'Extracting PDF text...' });
-            
-            const text = await extractText(filePath);
-            console.log(`   Extracted ${text.length} chars`);
-            
-            if (article && text.length > 0) {
-                await getDb().update(articles)
-                    .set({ pdfContext: text })
-                    .where(eq(articles.id, article.id));
-                console.log(`💾 Cached context for ${path.basename(filePath)}`);
-            }
-            
-            win?.webContents.send('chat-context-status', { status: 'ready', message: 'Context ready' });
+            console.log(`⚠️ No context available`);
+            win?.webContents.send('chat-context-status', { status: 'warning', message: 'No text available.' });
             return { success: true, cached: false };
         }
     } catch (error) {
@@ -887,37 +892,46 @@ app.whenReady().then(async () => {
     try {
         console.log(`💬 Chat request for ${path.basename(filePath)}`);
         
-        // 1. Check for cached context in DB
+        // 1. Get abstract from DB
         const article = await getDb().select({
             id: articles.id,
-            pdfContext: articles.pdfContext
+            abstract: articles.abstract,
+            title: articles.title
         }).from(articles).where(eq(articles.filePath, filePath)).get();
 
-        let text: string;
-        
-        if (article?.pdfContext) {
-            // Cache hit
-            console.log(`📦 Cache HIT for ${path.basename(filePath)}`);
-            win?.webContents.send('chat-context-status', { status: 'cached', message: 'Using cached context' });
-            text = article.pdfContext;
-        } else {
-            // Cache miss - extract and save
-            console.log(`⏳ Cache MISS for ${path.basename(filePath)}, extracting...`);
-            win?.webContents.send('chat-context-status', { status: 'extracting', message: 'Extracting PDF text...' });
-            
-            text = await extractText(filePath);
-            console.log(`   Extracted ${text.length} chars`);
-            
-            // Save to cache
-            if (article && text.length > 0) {
-                await getDb().update(articles)
-                    .set({ pdfContext: text })
-                    .where(eq(articles.id, article.id));
-                console.log(`💾 Cached context for ${path.basename(filePath)}`);
-            }
-            
-            win?.webContents.send('chat-context-status', { status: 'ready', message: 'Context ready' });
+        let pdfText = pdfContextCache.get(filePath);
+
+        // Fallback: Lazy extract if not in cache (e.g. if user refreshed app but stuck on page)
+        if (!pdfText) {
+             try {
+                 const extracted = await extractText(filePath);
+                 if (extracted && extracted.length > 0) {
+                     pdfText = extracted;
+                     // Update cache
+                     if (pdfContextCache.size >= PDF_CACHE_SIZE_LIMIT) {
+                         const firstKey = pdfContextCache.keys().next().value;
+                         if (firstKey) pdfContextCache.delete(firstKey);
+                     }
+                     pdfContextCache.set(filePath, pdfText);
+                 }
+             } catch (e) { console.error("Lazy extraction failed in chat-paper:", e); }
         }
+
+        let text = "";
+        
+        // Prioritize full PDF text
+        if (pdfText) {
+            text = `Title: ${article?.title}\n\nFull Text:\n${pdfText}`;
+            console.log(`📦 Using cached PDF context for ${path.basename(filePath)} (${pdfText.length} chars)`);
+        } else if (article?.abstract) {
+            text = `Title: ${article?.title}\n\nAbstract:\n${article.abstract}`;
+            console.log(`📦 Using abstract context for ${path.basename(filePath)}`);
+        } else {
+            text = `Title: ${article?.title || path.basename(filePath)}\n\n(No abstract or text available)`;
+            console.log(`⚠️ No context available for ${path.basename(filePath)}`);
+        }
+        
+        win?.webContents.send('chat-context-status', { status: 'ready', message: 'Sending to AI...' });
         
         // 2. Send to LLM
         const response = await chatWithPaper(text, messages);

@@ -1,41 +1,44 @@
+
 import fs from 'fs';
-import path from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdf = require('pdf-parse');
 
-const execAsync = promisify(exec);
-
+/**
+ * Extract text from a PDF file
+ * Uses pdf-parse to extract raw text content
+ */
 export async function extractText(filePath: string): Promise<string> {
-    try {
-        // Use pdftotext if available (from poppler)
-        try {
-            const { stdout } = await execAsync(`pdftotext "${filePath}" -`);
-            if (stdout && stdout.trim().length > 0) {
-                console.log(`Extracted ${stdout.length} chars from ${path.basename(filePath)}`);
-                return stdout;
-            }
-        } catch {
-            console.log('pdftotext not available, using fallback');
-        }
+  try {
+    const dataBuffer = fs.readFileSync(filePath);
+    // pdf-parse v1.1.1 exports a function directly that returns a promise
+    const data = await pdf(dataBuffer);
+    return trimReferences(data.text);
+  } catch (error) {
+    console.error(`Error extracting PDF text from ${filePath}:`, error);
+    return '';
+  }
+}
 
-        // Fallback: Try dynamic import of pdf-parse
-        try {
-            const pdfParse = await import('pdf-parse');
-            const dataBuffer = fs.readFileSync(filePath);
-            // Handle both default export and named export
-            const parser = (pdfParse as any).default || pdfParse;
-            const data = await parser(dataBuffer);
-            console.log(`Extracted ${data.text.length} chars from ${path.basename(filePath)}`);
-            return data.text;
-        } catch (e) {
-            console.error('pdf-parse failed:', e);
-        }
+function trimReferences(text: string): string {
+  const lines = text.split('\n');
+  // Regex matches:
+  // ^\s*           : Start of line, optional whitespace
+  // (?:[...])?     : Optional numbering (1., 12., VII., etc.)
+  // (?:References|...): The keywords (case insensitive covers REFERENCES)
+  // \s*$           : Optional whitespace, End of line
+  const referencePattern = /^\s*(?:(?:[0-9]+|[IVX]+)\.?\s*)?(?:References|REFERENCES|Bibliography|BIBLIOGRAPHY|Literature Cited|LITERATURE CITED|References\s+and\s+Notes)\s*$/i;
 
-        // Last resort: return empty string to indicate failure
-        console.warn(`Could not extract text from ${filePath} (all methods failed)`);
-        return "";
-    } catch (error) {
-        console.error(`Error extracting text from ${filePath}:`, error);
-        throw error;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (referencePattern.test(line)) {
+      // Heuristic: If this occurs in the first 10% of lines, it might be TOC or Header.
+      // But for now, we trust the strict pattern.
+      // If found, return text up to this line.
+      console.log(`[PDF] Trimming references at line ${i}/${lines.length}: "${line.trim()}"`);
+      return lines.slice(0, i).join('\n');
     }
+  }
+  
+  return text;
 }

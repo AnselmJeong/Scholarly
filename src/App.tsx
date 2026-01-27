@@ -445,6 +445,8 @@ function App() {
              onRemoveKeyword={handleRemoveKeyword}
              onOpenPdf={handleOpenPdf}
              onDelete={handleDeleteArticle}
+             onToggleKey={handleToggleKey}
+             onToggleRead={handleToggleRead}
              isProcessing={isProcessing}
            />
          }

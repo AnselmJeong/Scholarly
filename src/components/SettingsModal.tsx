@@ -7,14 +7,12 @@ interface SettingsModalProps {
 
 interface AppSettings {
   ai: {
-    keywordModel: string;
     chatModel: string;
   };
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [models, setModels] = useState<string[]>([]);
-  const [keywordModel, setKeywordModel] = useState('');
   const [chatModel, setChatModel] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -28,7 +26,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         .then(([list, settings]: [string[], AppSettings]) => {
           setModels(list || []);
           if (settings && settings.ai) {
-             setKeywordModel(settings.ai.keywordModel);
              setChatModel(settings.ai.chatModel);
           }
         })
@@ -38,7 +35,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   const handleSave = async () => {
     await window.ipcRenderer.invoke('save-settings', { 
-      ai: { keywordModel, chatModel } 
+      ai: { chatModel } 
     });
     onClose();
   };
@@ -70,33 +67,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
           {!isLoading && (
             <>
-              {/* Keyword Extraction Model Config */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    Keyword Extraction Model
-                    </label>
-                    <span className="text-[10px] text-blue-400 font-medium bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
-                        For Analysis
-                    </span>
-                </div>
-                
-                <div className="space-y-2">
-                    <select
-                        value={keywordModel}
-                        onChange={(e) => setKeywordModel(e.target.value)}
-                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500/50 focus:bg-slate-800/80 transition-all appearance-none"
-                    >
-                        {models.length === 0 && <option value="">No models found</option>}
-                        {models.map(model => (
-                            <option key={`kw-${model}`} value={model}>{model}</option>
-                        ))}
-                    </select>
-                    <p className="text-[11px] text-slate-500">
-                        Used for analyzing new PDFs and extracting relevant keywords automatically.
-                    </p>
-                </div>
-              </div>
+
 
               {/* Chat Model Config */}
               <div>

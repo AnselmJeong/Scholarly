@@ -18,6 +18,7 @@ interface Article {
     doi: string | null;
     filePath: string;
     isKey?: number | boolean;
+    isRead?: number | boolean;
 }
 
 interface ArticleDetailProps {
@@ -30,6 +31,7 @@ interface ArticleDetailProps {
     onOpenPdf: () => void;
     onDelete: () => void;
     onToggleKey?: (articleId: number, isKey: boolean) => void;
+    onToggleRead?: (articleId: number, isRead: boolean) => void;
     isProcessing: boolean;
 }
 
@@ -43,6 +45,7 @@ export function ArticleDetail({
     onOpenPdf,
     onDelete,
     onToggleKey,
+    onToggleRead,
     isProcessing 
 }: ArticleDetailProps) {
   const [newKeyword, setNewKeyword] = useState('');
@@ -159,11 +162,16 @@ export function ArticleDetail({
                     {article.isKey ? '⭐' : '☆'}
                 </button>
                 <button 
-                    onClick={onOpenPdf}
-                    className="p-2 hover:bg-blue-500/10 rounded-lg text-slate-400 hover:text-blue-400 transition-all border border-transparent hover:border-blue-500/20"
-                    title="Open PDF"
+                    onClick={() => onToggleRead && onToggleRead(article.id, !article.isRead)}
+                    className={cn(
+                        "p-2 rounded-lg transition-all border border-transparent",
+                        article.isRead 
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
+                            : "hover:bg-slate-700/50 text-slate-400 hover:text-emerald-400"
+                    )}
+                    title={article.isRead ? "Mark as Unread" : "Mark as Read"}
                 >
-                    📖
+                    {article.isRead ? '☑' : '☐'}
                 </button>
                 <div className="w-px h-8 bg-slate-700/50 mx-1" />
                 <button 
