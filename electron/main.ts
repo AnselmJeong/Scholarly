@@ -745,6 +745,28 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle('open-external', async (_event, url: string) => {
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (error) {
+      console.error('Error opening external link:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('get-foundation-prompt', async () => {
+    try {
+      const promptPath = path.join(process.env.APP_ROOT, 'foundation_prompt.md');
+      if (fs.existsSync(promptPath)) {
+        return { success: true, content: fs.readFileSync(promptPath, 'utf8') };
+      }
+      return { success: false, error: 'Prompt file not found' };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
   ipcMain.handle('prune-orphans', async () => {
     try {
         const allArticles = await getDb().select().from(articles);

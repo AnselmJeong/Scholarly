@@ -48,16 +48,23 @@ export function ArticleDetail({
     onToggleRead,
     isProcessing 
 }: ArticleDetailProps) {
+  interface ChatMessage {
+      role: 'user' | 'assistant';
+      content: string;
+      label?: string;
+      isExpanded?: boolean;
+  }
+
   const [newKeyword, setNewKeyword] = useState('');
   const [isChatMode, setIsChatMode] = useState(false);
-  const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant', content: string }>>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [contextStatus, setContextStatus] = useState<{ status: string; message: string } | null>(null);
   
   const keywordInputRef = useRef<HTMLInputElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
-  const messageListRef = useRef<HTMLDivElement>(null); // New ref for the message container
+  const messageListRef = useRef<HTMLDivElement>(null);
 
   // Reset chat when article changes
   useEffect(() => {
@@ -119,19 +126,26 @@ export function ArticleDetail({
     }
   };
 
-  const handleSendMessage = async (e?: React.FormEvent) => {
-      e?.preventDefault();
-      if (!inputMessage.trim() || isChatLoading) return;
-
-      const userMsg = inputMessage.trim();
-      setInputMessage('');
-      setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+  // Core send logic
+  const sendMessage = async (text: string, displayLabel?: string) => {
+      if (isChatLoading || !article) return;
+      
+      const newMessage: ChatMessage = { 
+          role: 'user', 
+          content: text,
+          label: displayLabel 
+      };
+      
+      setMessages(prev => [...prev, newMessage]);
       setIsChatLoading(true);
 
       try {
+          // Send only role and content to backend (sanitize)
+          const historyForLLM = messages.map(({ role, content }) => ({ role, content }));
+          
           const result = await window.ipcRenderer.invoke('chat-paper', {
               filePath: article.filePath,
-              messages: [...messages, { role: 'user', content: userMsg }]
+              messages: [...historyForLLM, { role: 'user', content: text }]
           });
 
           if (result.success) {
@@ -145,6 +159,27 @@ export function ArticleDetail({
           setIsChatLoading(false);
       }
   };
+
+  const handleSendMessage = async (e?: React.FormEvent) => {
+      e?.preventDefault();
+      if (!inputMessage.trim() || isChatLoading) return;
+
+      const userMsg = inputMessage.trim();
+      setInputMessage('');
+      // Use core logic
+      // We manually update state here to match original logic before calling API? 
+      // original: setMessages -> setIsChatLoading -> invoke -> setMessages (response)
+      // My extracted sendMessage does this too.
+      
+      await sendMessage(userMsg);
+  };
+
+  // Helper for the button
+  const sendDirectMessage = async (text: string, label?: string) => {
+      await sendMessage(text, label);
+  };
+
+
 
   return (
     <div className="w-full min-w-0 border-l border-slate-700/50 bg-slate-900/30 backdrop-blur-sm flex flex-col h-full ring-1 ring-white/5">
@@ -235,21 +270,37 @@ export function ArticleDetail({
                                 msg.role === 'user' ? "self-end items-end" : "self-start items-start"
                             )}>
                                 <div className={cn(
-                                    "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm prose prose-invert prose-sm max-w-none break-words",
+                                    "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm prose prose-sm max-w-none break-words",
                                     msg.role === 'user' 
-                                        ? "bg-blue-600 text-white rounded-br-none prose-p:text-white prose-a:text-white/90 prose-p:my-1 prose-headings:my-2 prose-ul:my-2 prose-li:my-0.5" 
-                                        : "bg-slate-700/80 text-slate-200 rounded-bl-none border border-slate-600/50 prose-p:text-slate-200 prose-a:text-blue-400 prose-code:bg-slate-800 prose-code:px-1 prose-code:rounded prose-pre:bg-slate-900 prose-pre:rounded-lg prose-p:my-1 prose-headings:my-2 prose-ul:my-2 prose-li:my-0.5"
+                                        ? "bg-blue-600 text-white rounded-br-none prose-invert prose-p:text-white prose-headings:text-white prose-strong:text-white prose-em:text-white prose-code:text-white prose-code:bg-white/20 prose-pre:bg-black/20 prose-pre:text-white prose-a:text-white/90 prose-li:text-white prose-ul:my-2 prose-ol:my-2 prose-hr:border-white/20 prose-blockquote:border-white/30 prose-blockquote:text-white/90" 
+                                        : "bg-slate-700/80 text-slate-200 rounded-bl-none border border-slate-600/50 prose-invert prose-p:text-slate-200 prose-a:text-blue-400 prose-code:bg-slate-800 prose-code:px-1 prose-code:rounded prose-pre:bg-slate-900 prose-pre:rounded-lg prose-p:my-1 prose-headings:my-2 prose-ul:my-2 prose-li:my-0.5"
                                 )}>
-                                    <Markdown 
-                                        remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} 
-                                        rehypePlugins={[rehypeKatex]}
-                                        components={{
-                                            p: ({node, ...props}: any) => <p {...props} />,
-                                            a: ({node, href, ...props}: any) => <a href={href} target="_blank" rel="noopener noreferrer" className="hover:underline" {...props} />
-                                        }}
-                                    >
-                                        {msg.content}
-                                    </Markdown>
+                                    {msg.label ? (
+                                        <div className="flex items-center gap-2 text-white/90 italic select-none">
+                                            <span>📚</span> {msg.label}
+                                        </div>
+                                    ) : (
+                                        <Markdown 
+                                            remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} 
+                                            rehypePlugins={[rehypeKatex]}
+                                            components={{
+                                                p: ({node, ...props}: any) => <p {...props} />,
+                                                a: ({node, href, ...props}: any) => (
+                                                    <a 
+                                                        href={href} 
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            window.ipcRenderer.invoke('open-external', href);
+                                                        }}
+                                                        className="hover:underline cursor-pointer" 
+                                                        {...props} 
+                                                    />
+                                                )
+                                            }}
+                                        >
+                                            {msg.content}
+                                        </Markdown>
+                                    )}
                                 </div>
                                 <span className="text-[10px] text-slate-500 mt-1 px-1">
                                     {msg.role === 'user' ? 'You' : 'AI Assistant'}
@@ -268,6 +319,31 @@ export function ArticleDetail({
 
                     {/* Input Area */}
                     <div className="p-4 bg-slate-900 border-t border-slate-700/50 z-10 shrink-0">
+                        {/* Quick Prompts */}
+                        <div className="flex gap-2 mb-2 overflow-x-auto custom-scrollbar pb-1">
+                            <button
+                                onClick={async () => {
+                                    if (isChatLoading) return;
+                                    try {
+                                        const result = await window.ipcRenderer.invoke('get-foundation-prompt');
+                                        if (result.success && result.content) {
+                                            if (!isChatLoading) {
+                                                const prompt = result.content;
+                                                // Send with label
+                                                await sendDirectMessage(prompt, "Find Foundational Words (Prompt)");
+                                            }
+                                        }
+                                    } catch (e) {
+                                        console.error(e);
+                                    }
+                                }}
+                                disabled={isChatLoading}
+                                className="px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 text-xs font-semibold hover:bg-blue-500/20 border border-blue-500/20 transition-all whitespace-nowrap flex items-center gap-2"
+                            >
+                                <span>📚</span> Find Foundational Words
+                            </button>
+                        </div>
+
                         <form onSubmit={(e) => handleSendMessage(e)} className="relative flex items-end gap-2">
                             <textarea
                                 ref={chatInputRef}
@@ -364,9 +440,11 @@ export function ArticleDetail({
                                     <span className="text-[10px] font-bold text-slate-500 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50 tracking-wider">DOI</span>
                                     <a
                                         href={`https://doi.org/${article.doi}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-xs font-mono text-blue-400 hover:text-blue-300 hover:underline transition-colors truncate"
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            window.ipcRenderer.invoke('open-external', `https://doi.org/${article.doi}`);
+                                        }}
+                                        className="text-xs font-mono text-blue-400 hover:text-blue-300 hover:underline transition-colors truncate cursor-pointer"
                                         title={`Open https://doi.org/${article.doi}`}
                                     >
                                         {article.doi}

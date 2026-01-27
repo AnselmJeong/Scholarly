@@ -73,6 +73,19 @@ export function GuidanceViewer({ content, onClose, title }: GuidanceViewerProps)
                         <Markdown 
                             remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} 
                             rehypePlugins={[rehypeKatex]}
+                            components={{
+                                a: ({node, href, ...props}: any) => (
+                                    <a 
+                                        href={href} 
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            window.ipcRenderer.invoke('open-external', href);
+                                        }}
+                                        className="hover:underline cursor-pointer" 
+                                        {...props} 
+                                    />
+                                )
+                            }}
                         >
                             {preprocessContent(content)}
                         </Markdown>
