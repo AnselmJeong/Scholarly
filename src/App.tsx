@@ -30,6 +30,8 @@ interface Keyword {
     usageCount: number;
 }
 
+type MarkdownTheme = 'lapis-dark' | 'lapis' | 'vercel' | 'newsprint';
+
 interface ArticleKeywordLink {
   articleId: number;
   keywordId: number;
@@ -59,21 +61,26 @@ function App() {
   const [centerTab, setCenterTab] = useState<'list' | 'guidance'>('list');
   const [guidanceContent, setGuidanceContent] = useState<string>('');
   const [guidanceTitle, setGuidanceTitle] = useState<string>('');
+  const [markdownTheme, setMarkdownTheme] = useState<MarkdownTheme>('lapis-dark');
   
   // App Loading State
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
       try {
-          const [articlesData, keywordsData, linksData] = await Promise.all([
+          const [articlesData, keywordsData, linksData, settings] = await Promise.all([
             window.ipcRenderer.invoke('get-articles'),
             window.ipcRenderer.invoke('get-keywords'),
-            window.ipcRenderer.invoke('get-all-links')
+            window.ipcRenderer.invoke('get-all-links'),
+            window.ipcRenderer.invoke('get-settings')
           ]);
-          
+
           setArticles(articlesData || []);
           setKeywords(keywordsData || []);
           setLinks(linksData || []);
+          if (settings?.ui?.markdownTheme) {
+            setMarkdownTheme(settings.ui.markdownTheme);
+          }
       } catch (e) {
           console.error("Failed to fetch data", e);
       } finally {
@@ -396,7 +403,7 @@ function App() {
            ⚠️ Ollama not running
          </div>
        )}
-       
+
        <ResizablePanels
          leftPanel={
            <SidebarTabs 
@@ -428,10 +435,11 @@ function App() {
                  onSelectFolder={handleSelectRoot}
                />
            ) : (
-               <GuidanceViewer 
+               <GuidanceViewer
                    content={guidanceContent}
                    title={guidanceTitle}
                    onClose={() => setCenterTab('list')}
+                   theme={markdownTheme}
                />
            )
          }
@@ -457,9 +465,17 @@ function App() {
          minRightWidth={320}
        />
 
-       <SettingsModal 
+       <SettingsModal
          isOpen={isSettingsOpen}
-         onClose={() => setIsSettingsOpen(false)}
+         onClose={() => {
+           setIsSettingsOpen(false);
+           // Reload settings to apply theme change
+           window.ipcRenderer.invoke('get-settings').then((settings: { ui?: { markdownTheme?: MarkdownTheme } }) => {
+             if (settings?.ui?.markdownTheme) {
+               setMarkdownTheme(settings.ui.markdownTheme);
+             }
+           });
+         }}
        />
 
        <ScanProgress 

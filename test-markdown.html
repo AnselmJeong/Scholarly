@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lapis Theme Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1e222a;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        /* Lapis Dark Theme CSS - Copied from lapis-theme.css */
+        .lapis-markdown {
+            --lapis-text: #e4e4e4;
+            --lapis-text-secondary: #b0b8c4;
+            --lapis-primary: #8393ad;
+            --lapis-bg: #1e222a;
+            --lapis-code: #abbad4;
+            --lapis-marker: #7d8a9f;
+            --lapis-highlight: #ffffb5c2;
+            --lapis-header-span: #47556d;
+            --lapis-block-bg: #080e1d;
+            --lapis-quote-bg: #2a2f3b;
+            --lapis-border: #3a4553;
+            --lapis-link: #6b9edd;
+        }
+
+        .lapis-markdown {
+            color: var(--lapis-text);
+            font-size: 1.1rem;
+            line-height: 1.7;
+            word-break: break-word;
+            text-align: justify;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;
+        }
+
+        .lapis-markdown h1,
+        .lapis-markdown h2,
+        .lapis-markdown h3,
+        .lapis-markdown h4,
+        .lapis-markdown h5,
+        .lapis-markdown h6 {
+            color: var(--lapis-primary);
+            font-weight: 600;
+            margin-top: 1.5em;
+            margin-bottom: 0.75em;
+            line-height: 1.4;
+        }
+
+        .lapis-markdown h1 {
+            font-size: 2rem;
+            text-align: center;
+            padding-top: 0.9rem;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--lapis-border);
+            padding-bottom: 1rem;
+        }
+
+        /* Lapis signature h2 pill style */
+        .lapis-markdown h2 {
+            font-size: 1.5rem;
+            background-color: var(--lapis-header-span);
+            color: var(--lapis-text);
+            padding: 4px 16px;
+            border-radius: 4px;
+            display: inline-block;
+            margin: 1.5em 0 0.75em 0;
+        }
+
+        .lapis-markdown h3 {
+            font-size: 1.35rem;
+            border-left: 3px solid var(--lapis-primary);
+            padding-left: 12px;
+        }
+
+        .lapis-markdown h4 {
+            font-size: 1.2rem;
+        }
+
+        .lapis-markdown p {
+            margin: 1em 0;
+            line-height: 1.8;
+            color: var(--lapis-text);
+        }
+
+        .lapis-markdown strong {
+            color: var(--lapis-primary);
+            font-weight: 600;
+        }
+
+        .lapis-markdown em {
+            font-style: italic;
+        }
+
+        .lapis-markdown a {
+            color: var(--lapis-link);
+            text-decoration: underline;
+            text-underline-offset: 3px;
+        }
+
+        .lapis-markdown ul, .lapis-markdown ol {
+            margin: 0.75em 0;
+            padding-left: 1.5em;
+        }
+
+        .lapis-markdown li {
+            margin: 0.4em 0;
+            color: var(--lapis-text);
+        }
+
+        .lapis-markdown li::marker {
+            color: var(--lapis-marker);
+            font-weight: bold;
+        }
+
+        .lapis-markdown blockquote {
+            margin: 1.25em 0;
+            padding: 1em 1.25em;
+            background: var(--lapis-quote-bg);
+            border-left: 3px solid var(--lapis-primary);
+            border-radius: 0 6px 6px 0;
+        }
+
+        .lapis-markdown code {
+            color: var(--lapis-code);
+            background-color: var(--lapis-block-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.9em;
+        }
+
+        .lapis-markdown pre {
+            margin: 1.25em 0;
+            padding: 1.25em 1em;
+            background-color: var(--lapis-block-bg);
+            border-radius: 10px;
+            overflow-x: auto;
+            border: 1px solid var(--lapis-border);
+        }
+
+        .lapis-markdown pre code {
+            padding: 0;
+            background: transparent;
+        }
+
+        .lapis-markdown table {
+            width: 100%;
+            margin: 1.25em 0;
+            border-collapse: collapse;
+        }
+
+        .lapis-markdown th, .lapis-markdown td {
+            padding: 0.75em 1em;
+            border: 1px solid var(--lapis-header-span);
+            text-align: left;
+        }
+
+        .lapis-markdown th {
+            background-color: var(--lapis-header-span);
+            color: var(--lapis-text);
+            font-weight: 600;
+        }
+
+        .lapis-markdown td {
+            background-color: var(--lapis-bg);
+        }
+
+        .lapis-markdown hr {
+            margin: 2em 0;
+            border: none;
+            border-top: 1px solid var(--lapis-header-span);
+        }
+
+        /* KaTeX display math */
+        .lapis-markdown .katex-display {
+            margin: 1.5em 0;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <article class="lapis-markdown" id="content">
+            Loading...
+        </article>
+    </div>
+
+    <script>
+        // Sample content with math
+        const sampleContent = `
+# Dynamic Brain Entropy - Test Document
+
+## 1. What problem does the author set out to solve?
+
+**The central problem** – maladaptive risky decision-making across psychiatric conditions.
+
+The *gap* they identify is a **lack of neuro-computational tools that can capture the dynamic, moment-to-moment variability of brain activity**.
+
+---
+
+## 2. Mathematical Formulas
+
+### 2.1 Embedding dimension $m$ and delay time $l$
+
+To compute permutation entropy, we first transform the scalar time series into **$m$-dimensional vectors**:
+
+$$
+X_i = \\bigl[x(i), x(i+l), x(i+2l), …, x(i+(m-1)l)\\bigr]
+$$
+
+The probability distribution $P_j$ of symbol occurrences determines the permutation entropy:
+
+$$
+\\text{Permutation Entropy}= -\\sum_{j=1}^{K} P_j \\ln P_j
+$$
+
+### 2.2 Dynamic Entropy Measures
+
+1. **Coefficient of Variation (CV)**:
+$$
+\\text{CV}= \\frac{\\mathrm{ESD}}{\\mathrm{Emean}}
+$$
+
+2. **Rate of change**:
+$$
+\\text{Rate}= \\frac{1}{n-1}\\sum_{t=1}^{n-1} \\frac{|E_t - E_{t+1}|}{E_t}
+$$
+
+---
+
+## 3. Key Findings
+
+| Disorder | Best Predictor | Correlation (r) | $R^2$ |
+|----------|----------------|----------------|-------|
+| HC       | **CV** | 0.58 | 0.32 |
+| BD       | **CV** | 0.78 | 0.61 |
+| SZ       | **Rate** | 0.69 | 0.47 |
+| ADHD     | **Rate** | 0.78 | 0.60 |
+
+---
+
+## 4. Code Example
+
+\`\`\`python
+def compute_entropy(signal, m=5, l=5):
+    """Compute permutation entropy"""
+    n = len(signal)
+    vectors = []
+    for i in range(n - (m-1)*l):
+        vec = [signal[i + k*l] for k in range(m)]
+        vectors.append(tuple(np.argsort(vec)))
+    return -sum(p * np.log(p) for p in Counter(vectors).values())
+\`\`\`
+
+> **Note**: This is a simplified implementation. The actual paper uses more sophisticated methods.
+
+### Inline Math Test
+
+The authors choose $m = 5$ and $l = 5$ TRs, which gives $m! = 120$ possible permutations.
+`;
+
+        // Parse and render
+        document.getElementById('content').innerHTML = marked.parse(sampleContent);
+
+        // Render KaTeX
+        renderMathInElement(document.getElementById('content'), {
+            delimiters: [
+                {left: '$$', right: '$$', display: true},
+                {left: '$', right: '$', display: false}
+            ],
+            throwOnError: false
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,333 @@
+/*
+ * Newsprint Theme for React-Markdown
+ * Inspired by classic newspaper/book typography
+ * PT Serif font, warm cream background
+ */
+
+/* ========================================
+   CSS Variables - Newsprint Palette
+   ======================================== */
+
+.theme-newsprint {
+  --np-bg: #f3f2ee;
+  --np-text: #1f0909;
+  --np-text-secondary: #656565;
+  --np-link: #065588;
+  --np-border: #c5c5c5;
+  --np-code-bg: #dadada;
+  --np-header-bg: #dadada;
+  --np-row-alt: #e8e7e7;
+  --np-quote-border: #bababa;
+}
+
+/* ========================================
+   Base Styles
+   ======================================== */
+
+.theme-newsprint {
+  color: var(--np-text);
+  font-size: 1rem;
+  line-height: 1.6;
+  font-family: 'PT Serif', 'Times New Roman', 'SF Pro', Times, serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ========================================
+   Headers
+   ======================================== */
+
+.theme-newsprint h1,
+.theme-newsprint h2,
+.theme-newsprint h3,
+.theme-newsprint h4,
+.theme-newsprint h5,
+.theme-newsprint h6 {
+  color: var(--np-text);
+  font-weight: bold;
+  margin-bottom: 1em;
+  line-height: 1.4;
+}
+
+.theme-newsprint h1 {
+  font-size: 1.875em;
+  line-height: 1.3em;
+  font-weight: normal;
+  margin-top: 2em;
+  margin-bottom: 0.5em;
+  padding-bottom: 0.8125em;
+  border-bottom: 1px solid var(--np-border);
+}
+
+.theme-newsprint h2,
+.theme-newsprint h3 {
+  font-size: 1.3125em;
+  line-height: 1.15;
+  margin-top: 2.285714em;
+  margin-bottom: 0.75em;
+}
+
+.theme-newsprint h3 {
+  font-weight: normal;
+}
+
+.theme-newsprint h4 {
+  font-size: 1.125em;
+  margin-top: 2.67em;
+}
+
+.theme-newsprint h5,
+.theme-newsprint h6 {
+  font-size: 1em;
+}
+
+/* ========================================
+   Paragraphs & Text
+   ======================================== */
+
+.theme-newsprint p {
+  margin: 0 0 1.5em 0;
+  line-height: 1.6;
+  color: var(--np-text);
+}
+
+.theme-newsprint strong {
+  font-weight: bold;
+}
+
+.theme-newsprint em {
+  font-style: italic;
+}
+
+/* ========================================
+   Links
+   ======================================== */
+
+.theme-newsprint a {
+  color: var(--np-link);
+  text-decoration: none;
+  transition: text-decoration 0.15s ease;
+}
+
+.theme-newsprint a:hover,
+.theme-newsprint a:active {
+  text-decoration: underline;
+}
+
+/* ========================================
+   Lists
+   ======================================== */
+
+.theme-newsprint ul,
+.theme-newsprint ol {
+  margin: 0 0 1.5em 1.5em;
+  padding: 0;
+}
+
+.theme-newsprint ul {
+  list-style-type: disc;
+  list-style-position: outside;
+}
+
+.theme-newsprint ol {
+  list-style-type: decimal;
+  list-style-position: outside;
+}
+
+.theme-newsprint li {
+  margin: 0.3em 0;
+  color: var(--np-text);
+  line-height: 1.6;
+}
+
+.theme-newsprint li ol > li {
+  list-style-type: lower-alpha;
+}
+
+.theme-newsprint li li ol > li {
+  list-style-type: lower-roman;
+}
+
+/* Task lists */
+.theme-newsprint input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--np-link);
+}
+
+/* ========================================
+   Blockquotes
+   ======================================== */
+
+.theme-newsprint blockquote {
+  margin: 0 0 1.5em 0;
+  padding-left: 1em;
+  border-left: 5px solid var(--np-quote-border);
+  font-style: italic;
+  color: var(--np-text-secondary);
+}
+
+.theme-newsprint blockquote p {
+  margin: 0.5em 0;
+  color: var(--np-text-secondary);
+}
+
+.theme-newsprint blockquote ul,
+.theme-newsprint blockquote ol {
+  margin-left: 0;
+}
+
+/* ========================================
+   Code - Inline
+   ======================================== */
+
+.theme-newsprint code {
+  padding: 2px 4px;
+  font-family: Menlo, 'Ubuntu Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.875em;
+  background-color: var(--np-code-bg);
+  border-radius: 2px;
+}
+
+/* Reset for code inside pre */
+.theme-newsprint pre code {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+/* ========================================
+   Code - Block
+   ======================================== */
+
+.theme-newsprint pre {
+  margin: 0 0 1.5em 2em;
+  padding: 0.5em 1ch;
+  background-color: var(--np-code-bg);
+  overflow-x: auto;
+  font-family: Menlo, 'Ubuntu Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.875em;
+  line-height: 1.714285em;
+}
+
+/* ========================================
+   Tables
+   ======================================== */
+
+.theme-newsprint table {
+  width: 100%;
+  margin-bottom: 1.5em;
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: 1em;
+}
+
+.theme-newsprint th,
+.theme-newsprint td {
+  padding: 0.25em 0.4em;
+  text-align: left;
+  vertical-align: top;
+}
+
+.theme-newsprint th {
+  text-transform: uppercase;
+  font-weight: bold;
+  background-color: var(--np-header-bg);
+}
+
+.theme-newsprint tr:nth-child(even) {
+  background: var(--np-row-alt);
+}
+
+/* ========================================
+   Images
+   ======================================== */
+
+.theme-newsprint img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.5em auto;
+}
+
+/* ========================================
+   Horizontal Rule
+   ======================================== */
+
+.theme-newsprint hr {
+  margin: 2em 0;
+  border: none;
+  border-top: none;
+  border-right: none;
+  border-bottom: 1px solid var(--np-border);
+  border-left: none;
+}
+
+/* ========================================
+   KaTeX Math
+   ======================================== */
+
+.theme-newsprint .katex-display {
+  margin: 1.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.theme-newsprint .katex {
+  font-size: 1.1em;
+}
+
+/* ========================================
+   Alerts (GFM style)
+   ======================================== */
+
+.theme-newsprint .markdown-alert {
+  margin: 1em 0 1.5em 0;
+  padding: 0.75em 1em;
+  border-left: 5px solid var(--np-quote-border);
+  font-style: italic;
+}
+
+.theme-newsprint .markdown-alert-note {
+  border-left-color: var(--np-link);
+}
+
+.theme-newsprint .markdown-alert-tip {
+  border-left-color: #2e7d32;
+}
+
+.theme-newsprint .markdown-alert-important {
+  border-left-color: #5e35b1;
+}
+
+.theme-newsprint .markdown-alert-warning {
+  border-left-color: #f57c00;
+}
+
+.theme-newsprint .markdown-alert-caution {
+  border-left-color: #c62828;
+}
+
+/* ========================================
+   Scrollbar
+   ======================================== */
+
+.theme-newsprint pre::-webkit-scrollbar {
+  height: 8px;
+}
+
+.theme-newsprint pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.theme-newsprint pre::-webkit-scrollbar-thumb {
+  background: var(--np-quote-border);
+  border-radius: 4px;
+}
+
+/* ========================================
+   Selection
+   ======================================== */
+
+.theme-newsprint ::selection {
+  background: rgba(32, 43, 51, 0.3);
+  color: white;
+}

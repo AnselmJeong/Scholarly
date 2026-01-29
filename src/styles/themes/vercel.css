@@ -1,0 +1,399 @@
+/*
+ * Vercel Theme for React-Markdown
+ * Inspired by Vercel Design System
+ * Clean, minimal, modern aesthetic
+ */
+
+/* ========================================
+   CSS Variables - Vercel Palette
+   ======================================== */
+
+.theme-vercel {
+  --v-white-100: #ffffff;
+  --v-white-200: #fafafa;
+  --v-gray-1000: #171717;
+  --v-gray-900: #666666;
+  --v-gray-800: #7d7d7d;
+  --v-gray-700: #8f8f8f;
+  --v-gray-600: #a8a8a8;
+  --v-gray-500: #c9c9c9;
+  --v-gray-400: #eaeaea;
+  --v-purple-700: #8e4ec6;
+  --v-purple-900: #7820bc;
+  --v-red-700: #e5484d;
+  --v-red-900: #cb2a2f;
+  --v-amber-700: #f5b047;
+  --v-amber-900: #a35200;
+  --v-green-700: #45a557;
+  --v-green-900: #297a3a;
+  --v-blue-600: #52aeff;
+  --v-blue-700: #0072f5;
+  --v-blue-900: #0068d6;
+  --v-background: #282c34;
+}
+
+/* ========================================
+   Base Styles
+   ======================================== */
+
+.theme-vercel {
+  color: var(--v-gray-1000);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ========================================
+   Headers
+   ======================================== */
+
+.theme-vercel h1,
+.theme-vercel h2,
+.theme-vercel h3,
+.theme-vercel h4,
+.theme-vercel h5,
+.theme-vercel h6 {
+  color: var(--v-gray-1000);
+  font-weight: 600;
+  margin-top: 2em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+
+.theme-vercel h1 {
+  font-size: 2.5rem;
+  line-height: 1.2;
+  margin-top: 0;
+  margin-bottom: 1rem;
+}
+
+.theme-vercel h2 {
+  font-size: 2rem;
+  line-height: 1.25;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--v-gray-400);
+}
+
+.theme-vercel h3 {
+  font-size: 1.5em;
+}
+
+.theme-vercel h4 {
+  font-size: 1.25em;
+}
+
+.theme-vercel h5 {
+  font-size: 1em;
+}
+
+.theme-vercel h6 {
+  font-size: 1em;
+  color: var(--v-gray-900);
+}
+
+/* ========================================
+   Paragraphs & Text
+   ======================================== */
+
+.theme-vercel p {
+  margin: 1em 0;
+  line-height: 1.7;
+  color: var(--v-gray-1000);
+}
+
+.theme-vercel strong {
+  font-weight: 600;
+}
+
+.theme-vercel em {
+  font-style: italic;
+}
+
+.theme-vercel mark {
+  background-color: var(--v-blue-600);
+  color: white;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* ========================================
+   Links
+   ======================================== */
+
+.theme-vercel a {
+  color: var(--v-blue-700);
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.theme-vercel a:hover {
+  text-decoration: underline;
+}
+
+/* ========================================
+   Lists
+   ======================================== */
+
+.theme-vercel ul,
+.theme-vercel ol {
+  margin: 1em 0;
+  padding-left: 1.5em;
+}
+
+.theme-vercel ul {
+  list-style-type: none;
+}
+
+.theme-vercel ul > li {
+  position: relative;
+}
+
+.theme-vercel ul > li::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 0.75em;
+  width: 6px;
+  height: 2px;
+  background-color: var(--v-gray-1000);
+}
+
+.theme-vercel ol {
+  list-style-type: decimal;
+}
+
+.theme-vercel li {
+  margin: 0.5em 0;
+  color: var(--v-gray-1000);
+  line-height: 1.6;
+}
+
+/* Task lists */
+.theme-vercel input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--v-blue-700);
+}
+
+.theme-vercel li:has(input[type="checkbox"])::before {
+  display: none;
+}
+
+/* ========================================
+   Blockquotes
+   ======================================== */
+
+.theme-vercel blockquote {
+  margin: 1.25em 0;
+  padding: 12px 16px;
+  border: 1px solid var(--v-gray-500);
+  border-radius: 8px;
+  color: var(--v-gray-900);
+  line-height: 1.5;
+}
+
+.theme-vercel blockquote p {
+  margin: 0;
+  color: var(--v-gray-900);
+}
+
+/* ========================================
+   Code - Inline
+   ======================================== */
+
+.theme-vercel code {
+  padding: 2px 6px;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 0.9em;
+  background-color: var(--v-gray-400);
+  border-radius: 4px;
+}
+
+/* Reset for code inside pre */
+.theme-vercel pre code {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+/* ========================================
+   Code - Block
+   ======================================== */
+
+.theme-vercel pre {
+  margin: 1.25em 0;
+  padding: 1em;
+  background-color: var(--v-background);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 0.875em;
+  line-height: 1.5;
+  color: var(--v-gray-400);
+}
+
+/* Syntax highlighting colors (One Dark-inspired) */
+.theme-vercel pre .comment { color: #5c6370; }
+.theme-vercel pre .string { color: #98c379; }
+.theme-vercel pre .variable { color: #e06c75; }
+.theme-vercel pre .number { color: #d19a66; }
+.theme-vercel pre .keyword { color: #c678dd; }
+.theme-vercel pre .builtin { color: #56b6c2; }
+.theme-vercel pre .def { color: #61afef; }
+.theme-vercel pre .operator { color: #56b6c2; }
+
+/* ========================================
+   Tables
+   ======================================== */
+
+.theme-vercel table {
+  width: 100%;
+  margin: 1.25em 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
+  color: var(--v-gray-1000);
+}
+
+.theme-vercel th,
+.theme-vercel td {
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.theme-vercel th {
+  font-weight: 400;
+  color: var(--v-gray-900);
+  border-top: 1px solid var(--v-gray-400);
+  border-bottom: 1px solid var(--v-gray-400);
+  background-color: var(--v-white-200);
+}
+
+.theme-vercel th:first-child {
+  border-left: 1px solid var(--v-gray-400);
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+.theme-vercel th:last-child {
+  border-right: 1px solid var(--v-gray-400);
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+.theme-vercel td {
+  background-color: var(--v-white-100);
+}
+
+.theme-vercel tr:hover td {
+  background-color: var(--v-gray-400);
+}
+
+.theme-vercel tr:hover td:first-child {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+.theme-vercel tr:hover td:last-child {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+/* ========================================
+   Images
+   ======================================== */
+
+.theme-vercel img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.5em auto;
+  border-radius: 8px;
+  box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* ========================================
+   Horizontal Rule
+   ======================================== */
+
+.theme-vercel hr {
+  margin: 2em 0;
+  border: none;
+  border-bottom: 1px solid var(--v-gray-500);
+}
+
+/* ========================================
+   KaTeX Math
+   ======================================== */
+
+.theme-vercel .katex-display {
+  margin: 1.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.theme-vercel .katex {
+  font-size: 1.1em;
+}
+
+/* ========================================
+   Alerts (GFM style)
+   ======================================== */
+
+.theme-vercel .markdown-alert {
+  margin: 1em 0;
+  padding: 15px 16px;
+  border-radius: 8px;
+  line-height: 1.5;
+}
+
+.theme-vercel .markdown-alert-note {
+  border: 1px solid var(--v-blue-700);
+  color: var(--v-blue-900);
+}
+
+.theme-vercel .markdown-alert-tip {
+  border: 1px solid var(--v-green-700);
+  color: var(--v-green-900);
+}
+
+.theme-vercel .markdown-alert-important {
+  border: 1px solid var(--v-purple-700);
+  color: var(--v-purple-900);
+}
+
+.theme-vercel .markdown-alert-warning {
+  border: 1px solid var(--v-amber-700);
+  color: var(--v-amber-900);
+}
+
+.theme-vercel .markdown-alert-caution {
+  border: 1px solid var(--v-red-700);
+  color: var(--v-red-900);
+}
+
+/* ========================================
+   Scrollbar
+   ======================================== */
+
+.theme-vercel pre::-webkit-scrollbar {
+  height: 8px;
+}
+
+.theme-vercel pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.theme-vercel pre::-webkit-scrollbar-thumb {
+  background: #394051;
+  border-radius: 4px;
+}
+
+/* ========================================
+   Selection
+   ======================================== */
+
+.theme-vercel ::selection {
+  background: rgba(0, 114, 245, 0.15);
+}

@@ -1,0 +1,385 @@
+/*
+ * Lapis Light Theme for React-Markdown
+ * Adapted from Typora Theme - Lapis by YiNN
+ * https://github.com/YiNNx/typora-theme-lapis
+ */
+
+/* ========================================
+   CSS Variables - Lapis Light Palette
+   ======================================== */
+
+.theme-lapis {
+  --lapis-text: #40464f;
+  --lapis-text-secondary: #656565;
+  --lapis-primary: #4870ac;
+  --lapis-bg: #ffffff;
+  --lapis-code: #4870ac;
+  --lapis-marker: #a2b6d4;
+  --lapis-highlight: #ffffb5c2;
+  --lapis-header-span: #4870ac;
+  --lapis-block-bg: #f6f8fa;
+  --lapis-quote-bg: #f6f8fa;
+  --lapis-border: #eef2f5;
+  --lapis-link: #4870ac;
+
+  /* Alert colors */
+  --lapis-note: #527da8;
+  --lapis-tip: #428485;
+  --lapis-important: #614f9c;
+  --lapis-warning: #a88652;
+  --lapis-caution: #a34f55;
+}
+
+/* ========================================
+   Base Styles
+   ======================================== */
+
+.theme-lapis {
+  color: var(--lapis-text);
+  font-size: 1.1rem;
+  line-height: 1.7;
+  word-break: break-word;
+  text-align: justify;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;
+}
+
+/* ========================================
+   Headers
+   ======================================== */
+
+.theme-lapis h1,
+.theme-lapis h2,
+.theme-lapis h3,
+.theme-lapis h4,
+.theme-lapis h5,
+.theme-lapis h6 {
+  color: var(--lapis-primary);
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.75em;
+  line-height: 1.4;
+}
+
+.theme-lapis h1 {
+  font-size: 2rem;
+  text-align: center;
+  padding-top: 0.9rem;
+  margin-bottom: 2rem;
+  border-bottom: 1px solid var(--lapis-border);
+  padding-bottom: 1rem;
+}
+
+/* Lapis signature h2 pill style */
+.theme-lapis h2 {
+  font-size: 1.5rem;
+  background-color: var(--lapis-header-span);
+  color: #ffffff;
+  padding: 4px 16px;
+  border-radius: 4px;
+  display: inline-block;
+  margin: 1.5em 0 0.75em 0;
+}
+
+.theme-lapis h3 {
+  font-size: 1.35rem;
+  border-left: 3px solid var(--lapis-primary);
+  padding-left: 12px;
+}
+
+.theme-lapis h4 {
+  font-size: 1.2rem;
+}
+
+.theme-lapis h5 {
+  font-size: 1.1rem;
+}
+
+.theme-lapis h6 {
+  font-size: 1rem;
+  color: var(--lapis-text-secondary);
+}
+
+/* ========================================
+   Paragraphs & Text
+   ======================================== */
+
+.theme-lapis p {
+  margin: 1em 0;
+  line-height: 1.8;
+  color: var(--lapis-text);
+}
+
+.theme-lapis strong {
+  color: var(--lapis-primary);
+  font-weight: 600;
+}
+
+.theme-lapis em {
+  font-style: italic;
+  padding-right: 2px;
+}
+
+.theme-lapis mark {
+  background: var(--lapis-highlight);
+  color: var(--lapis-text);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+/* ========================================
+   Links
+   ======================================== */
+
+.theme-lapis a {
+  color: var(--lapis-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  transition: color 0.2s ease;
+}
+
+.theme-lapis a:hover {
+  color: #3d5d8a;
+}
+
+/* ========================================
+   Lists
+   ======================================== */
+
+.theme-lapis ul,
+.theme-lapis ol {
+  margin: 0.75em 0;
+  padding-left: 1.5em;
+}
+
+.theme-lapis ul {
+  list-style-type: disc;
+}
+
+.theme-lapis ul ul {
+  list-style-type: square;
+}
+
+.theme-lapis ol {
+  list-style-type: decimal;
+}
+
+.theme-lapis li {
+  margin: 0.4em 0;
+  color: var(--lapis-text);
+  line-height: 1.7;
+}
+
+.theme-lapis li::marker {
+  color: var(--lapis-marker);
+  font-weight: bold;
+}
+
+/* Task lists */
+.theme-lapis input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--lapis-primary);
+}
+
+/* ========================================
+   Blockquotes
+   ======================================== */
+
+.theme-lapis blockquote {
+  margin: 1.25em 0;
+  padding: 1em 1.25em;
+  background: var(--lapis-quote-bg);
+  border-left: 3px solid var(--lapis-primary);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.95em;
+}
+
+.theme-lapis blockquote p {
+  margin: 0.5em 0;
+  color: var(--lapis-text-secondary);
+}
+
+.theme-lapis blockquote blockquote {
+  margin-left: 0;
+  border-left-color: var(--lapis-marker);
+}
+
+/* ========================================
+   Code - Inline
+   ======================================== */
+
+.theme-lapis code {
+  color: var(--lapis-code);
+  background-color: var(--lapis-block-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  font-size: 0.9em;
+  word-break: break-all;
+}
+
+/* Reset for code inside pre */
+.theme-lapis pre code {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+/* ========================================
+   Code - Block
+   ======================================== */
+
+.theme-lapis pre {
+  margin: 1.25em 0;
+  padding: 1.25em 1em;
+  background-color: var(--lapis-block-bg);
+  border-radius: 10px;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  font-size: 0.9em;
+  line-height: 1.6;
+  color: #4f5467;
+}
+
+/* Syntax highlighting colors */
+.theme-lapis pre .keyword { color: #1694b6; }
+.theme-lapis pre .string { color: #6f42c2; }
+.theme-lapis pre .number { color: #1a5494; }
+.theme-lapis pre .comment { color: #9a9a9a; }
+.theme-lapis pre .function { color: #b9218e; }
+.theme-lapis pre .operator { color: #2f86d2; }
+
+/* ========================================
+   Tables
+   ======================================== */
+
+.theme-lapis table {
+  width: 100%;
+  margin: 1.25em 0;
+  border-collapse: collapse;
+  font-size: 0.95em;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.theme-lapis th,
+.theme-lapis td {
+  padding: 0.75em 1em;
+  border: 1px solid #d9dfe4;
+  text-align: left;
+}
+
+.theme-lapis th {
+  background-color: var(--lapis-block-bg);
+  color: var(--lapis-primary);
+  font-weight: 600;
+  text-align: center;
+}
+
+.theme-lapis td {
+  background-color: var(--lapis-bg);
+}
+
+.theme-lapis tr:hover td {
+  background-color: var(--lapis-block-bg);
+}
+
+/* ========================================
+   Images
+   ======================================== */
+
+.theme-lapis img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.5em auto;
+  border-radius: 8px;
+  filter: drop-shadow(#e3e8f0 0px 6px 6px);
+}
+
+/* ========================================
+   Horizontal Rule
+   ======================================== */
+
+.theme-lapis hr {
+  margin: 2em 0;
+  border: none;
+  border-top: 2px solid var(--lapis-border);
+  border-radius: 2px;
+}
+
+/* ========================================
+   KaTeX Math
+   ======================================== */
+
+.theme-lapis .katex-display {
+  margin: 1.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.theme-lapis .katex {
+  font-size: 1.1em;
+}
+
+/* ========================================
+   Alerts (GFM style)
+   ======================================== */
+
+.theme-lapis .markdown-alert {
+  margin: 1em 0;
+  padding: 1em 1.25em;
+  border-radius: 0 6px 6px 0;
+  border-left: 3px solid var(--lapis-primary);
+  background: var(--lapis-quote-bg);
+}
+
+.theme-lapis .markdown-alert-note {
+  border-left-color: var(--lapis-note);
+  background-color: rgba(82, 125, 168, 0.04);
+}
+
+.theme-lapis .markdown-alert-tip {
+  border-left-color: var(--lapis-tip);
+  background-color: rgba(66, 132, 133, 0.04);
+}
+
+.theme-lapis .markdown-alert-important {
+  border-left-color: var(--lapis-important);
+  background-color: rgba(97, 79, 156, 0.04);
+}
+
+.theme-lapis .markdown-alert-warning {
+  border-left-color: var(--lapis-warning);
+  background-color: rgba(155, 128, 73, 0.04);
+}
+
+.theme-lapis .markdown-alert-caution {
+  border-left-color: var(--lapis-caution);
+  background-color: rgba(163, 79, 85, 0.04);
+}
+
+/* ========================================
+   Scrollbar (within code blocks)
+   ======================================== */
+
+.theme-lapis pre::-webkit-scrollbar {
+  height: 8px;
+}
+
+.theme-lapis pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.theme-lapis pre::-webkit-scrollbar-thumb {
+  background: rgba(179, 179, 179, 0.4);
+  border-radius: 4px;
+}
+
+/* ========================================
+   Selection
+   ======================================== */
+
+.theme-lapis ::selection {
+  background: rgba(72, 112, 172, 0.2);
+}

@@ -767,6 +767,19 @@ app.whenReady().then(async () => {
     }
   });
 
+  // DEV: Load sample markdown for testing
+  ipcMain.handle('load-sample-markdown', async () => {
+    try {
+      const samplePath = path.join(process.env.APP_ROOT, 'sample_enhanced.md');
+      if (fs.existsSync(samplePath)) {
+        return { success: true, content: fs.readFileSync(samplePath, 'utf8') };
+      }
+      return { success: false, error: 'Sample file not found' };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
   ipcMain.handle('prune-orphans', async () => {
     try {
         const allArticles = await getDb().select().from(articles);

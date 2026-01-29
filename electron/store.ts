@@ -4,15 +4,23 @@ import fs from 'fs';
 
 const SETTINGS_FILE = 'settings.json';
 
+export type MarkdownTheme = 'lapis-dark' | 'lapis' | 'vercel' | 'newsprint';
+
 export interface AppSettings {
   ai: {
     chatModel: string;
+  };
+  ui: {
+    markdownTheme: MarkdownTheme;
   };
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   ai: {
     chatModel: 'mistral-large-3:675b-cloud'
+  },
+  ui: {
+    markdownTheme: 'lapis-dark'
   }
 };
 
@@ -27,10 +35,11 @@ export function loadSettings(): AppSettings {
       const data = fs.readFileSync(settingsPath, 'utf8');
       const settings = JSON.parse(data);
       // Merge with default to ensure structure
-      return { 
-        ...DEFAULT_SETTINGS, 
-        ...settings, 
-        ai: { ...DEFAULT_SETTINGS.ai, ...(settings.ai || {}) } 
+      return {
+        ...DEFAULT_SETTINGS,
+        ...settings,
+        ai: { ...DEFAULT_SETTINGS.ai, ...(settings.ai || {}) },
+        ui: { ...DEFAULT_SETTINGS.ui, ...(settings.ui || {}) }
       };
     }
   } catch (error) {

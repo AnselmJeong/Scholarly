@@ -5,15 +5,21 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+type MarkdownTheme = 'lapis-dark' | 'lapis' | 'vercel' | 'newsprint';
+
 interface AppSettings {
   ai: {
     chatModel: string;
+  };
+  ui: {
+    markdownTheme: MarkdownTheme;
   };
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [models, setModels] = useState<string[]>([]);
   const [chatModel, setChatModel] = useState('');
+  const [markdownTheme, setMarkdownTheme] = useState<MarkdownTheme>('lapis-dark');
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -28,14 +34,18 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           if (settings && settings.ai) {
              setChatModel(settings.ai.chatModel);
           }
+          if (settings && settings.ui) {
+             setMarkdownTheme(settings.ui.markdownTheme);
+          }
         })
         .finally(() => setIsLoading(false));
     }
   }, [isOpen]);
 
   const handleSave = async () => {
-    await window.ipcRenderer.invoke('save-settings', { 
-      ai: { chatModel } 
+    await window.ipcRenderer.invoke('save-settings', {
+      ai: { chatModel },
+      ui: { markdownTheme }
     });
     onClose();
   };
@@ -93,6 +103,34 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </select>
                     <p className="text-[11px] text-slate-500">
                         Used for answering questions about the paper in the chat interface.
+                    </p>
+                </div>
+              </div>
+
+              {/* Markdown Theme Config */}
+              <div>
+                 <div className="flex items-center justify-between mb-3">
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    Markdown Theme
+                    </label>
+                    <span className="text-[10px] text-purple-400 font-medium bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
+                        For Guidance
+                    </span>
+                </div>
+
+                <div className="space-y-2">
+                    <select
+                        value={markdownTheme}
+                        onChange={(e) => setMarkdownTheme(e.target.value as MarkdownTheme)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-purple-500/50 focus:bg-slate-800/80 transition-all appearance-none"
+                    >
+                        <option value="lapis-dark">Lapis Dark</option>
+                        <option value="lapis">Lapis Light</option>
+                        <option value="vercel">Vercel</option>
+                        <option value="newsprint">Newsprint</option>
+                    </select>
+                    <p className="text-[11px] text-slate-500">
+                        Theme for displaying guidance and analysis content.
                     </p>
                 </div>
               </div>
