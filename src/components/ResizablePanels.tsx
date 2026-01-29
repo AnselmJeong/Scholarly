@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 
+
 interface ResizablePanelsProps {
   leftPanel: React.ReactNode;
   centerPanel: React.ReactNode;
@@ -9,6 +10,7 @@ interface ResizablePanelsProps {
   minLeftWidth?: number;
   minCenterWidth?: number;
   minRightWidth?: number;
+  isLeftPanelVisible?: boolean;
 }
 
 export function ResizablePanels({
@@ -20,6 +22,7 @@ export function ResizablePanels({
   minLeftWidth = 200,
   minCenterWidth = 300,
   minRightWidth = 300,
+  isLeftPanelVisible = true,
 }: ResizablePanelsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [leftWidth, setLeftWidth] = useState(initialLeftWidth);
@@ -33,18 +36,24 @@ export function ResizablePanels({
     const containerRect = containerRef.current.getBoundingClientRect();
     const containerWidth = containerRect.width;
     
-    if (isDraggingLeft) {
+    if (isDraggingLeft && isLeftPanelVisible) {
       const newLeftWidth = e.clientX - containerRect.left;
       const maxLeftWidth = containerWidth - rightWidth - minCenterWidth;
       setLeftWidth(Math.max(minLeftWidth, Math.min(newLeftWidth, maxLeftWidth)));
     }
     
     if (isDraggingRight) {
+      // If left panel is hidden, leftWidth effectively 0 for calculations relative to container left
+      // But here we measure from right side.
+      // e.clientX is absolute.
+      // rightWidth = containerRect.right - e.clientX
+      const currentLeftWidth = isLeftPanelVisible ? leftWidth : 0;
+      
       const newRightWidth = containerRect.right - e.clientX;
-      const maxRightWidth = containerWidth - leftWidth - minCenterWidth;
+      const maxRightWidth = containerWidth - currentLeftWidth - minCenterWidth;
       setRightWidth(Math.max(minRightWidth, Math.min(newRightWidth, maxRightWidth)));
     }
-  }, [isDraggingLeft, isDraggingRight, leftWidth, rightWidth, minLeftWidth, minRightWidth, minCenterWidth]);
+  }, [isDraggingLeft, isDraggingRight, leftWidth, rightWidth, minLeftWidth, minRightWidth, minCenterWidth, isLeftPanelVisible]);
 
   const handleMouseUp = useCallback(() => {
     setIsDraggingLeft(false);
@@ -70,17 +79,21 @@ export function ResizablePanels({
   return (
     <div ref={containerRef} className="flex h-full w-full overflow-hidden">
       {/* Left Panel */}
-      <div style={{ width: leftWidth, flexShrink: 0 }} className="h-full overflow-hidden">
-        {leftPanel}
-      </div>
+      {isLeftPanelVisible && (
+        <div style={{ width: leftWidth, flexShrink: 0 }} className="h-full overflow-hidden">
+          {leftPanel}
+        </div>
+      )}
       
       {/* Left Divider */}
-      <div
-        className="w-1 h-full bg-slate-700/50 hover:bg-blue-500/50 cursor-col-resize transition-colors flex-shrink-0 relative group"
-        onMouseDown={() => setIsDraggingLeft(true)}
-      >
-        <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-blue-500/20" />
-      </div>
+      {isLeftPanelVisible && (
+        <div
+          className="w-1 h-full bg-slate-700/50 hover:bg-blue-500/50 cursor-col-resize transition-colors flex-shrink-0 relative group"
+          onMouseDown={() => setIsDraggingLeft(true)}
+        >
+          <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-blue-500/20" />
+        </div>
+      )}
       
       {/* Center Panel */}
       <div className="flex-1 h-full overflow-hidden min-w-0">

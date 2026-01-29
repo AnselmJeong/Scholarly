@@ -16,6 +16,7 @@ interface Article {
     filePath?: string;
 }
 
+
 interface ArticleListProps {
     articles: Article[];
     onSelect: (id: number) => void;
@@ -30,6 +31,8 @@ interface ArticleListProps {
     onSearchChange: (term: string) => void;
     onRescan?: () => void;
     onSelectFolder?: () => void;
+    isSidebarOpen?: boolean;
+    onToggleSidebar?: () => void;
 }
 
 import { useState, useMemo } from 'react';
@@ -47,11 +50,14 @@ export function ArticleList({
     searchTerm,
     onSearchChange,
     onRescan,
-    onSelectFolder 
+    onSelectFolder,
+    isSidebarOpen = true,
+    onToggleSidebar
 }: ArticleListProps) {
   const [sortField, setSortField] = useState<'title' | 'authors' | 'year' | 'isKey'>('year');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [isRescanning, setIsRescanning] = useState(false);
+  const [showAuthors, setShowAuthors] = useState(true);
 
   const handleSort = (field: 'title' | 'authors' | 'year' | 'isKey') => {
     if (sortField === field) {
@@ -109,29 +115,62 @@ export function ArticleList({
         {/* Header */}
         <div className="border-b border-slate-700/50 px-6 py-4 bg-slate-900/30 drag-region space-y-3">
             <div className="flex items-center justify-between">
-                <div>
-                    <div className="flex items-center gap-2">
-                        <h2 className="text-lg font-semibold text-slate-200">Articles</h2>
-                        <button 
-                            onClick={handleRescanClick}
-                            disabled={isRescanning}
-                            className={cn(
-                                "flex items-center gap-2 px-3 py-1 ml-2 rounded-md transition-colors no-drag border border-transparent",
-                                isRescanning 
-                                    ? "bg-blue-500/20 text-blue-300 border-blue-500/30" 
-                                    : "bg-slate-700/50 text-slate-300 hover:bg-blue-600/20 hover:text-blue-200 hover:border-blue-500/30"
-                            )}
-                            title="Rescan & Prune Orphans"
+                <div className="flex items-center gap-4">
+                    {/* Sidebar Toggle */}
+                    {onToggleSidebar && (
+                        <button
+                            onClick={onToggleSidebar}
+                            className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/50 transition-colors no-drag"
+                            title={isSidebarOpen ? "Collapse Sidebar" : "Expand Sidebar"}
                         >
-                           <span className={isRescanning ? "animate-spin" : ""}>🔄</span>
-                           <span className="text-xs font-medium">Rescan</span>
+                            {isSidebarOpen ? (
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><path d="M9 3v18"/></svg>
+                            ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><path d="M3 9h18"/></svg>
+                            )}
                         </button>
+                    )}
+
+                    <div className="h-6 w-px bg-slate-700/50" />
+
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <h2 className="text-lg font-semibold text-slate-200">Articles</h2>
+                            <button 
+                                onClick={handleRescanClick}
+                                disabled={isRescanning}
+                                className={cn(
+                                    "flex items-center gap-2 px-3 py-1 ml-2 rounded-md transition-colors no-drag border border-transparent",
+                                    isRescanning 
+                                        ? "bg-blue-500/20 text-blue-300 border-blue-500/30" 
+                                        : "bg-slate-700/50 text-slate-300 hover:bg-blue-600/20 hover:text-blue-200 hover:border-blue-500/30"
+                                )}
+                                title="Rescan & Prune Orphans"
+                            >
+                               <span className={isRescanning ? "animate-spin" : ""}>🔄</span>
+                               <span className="text-xs font-medium">Rescan</span>
+                            </button>
+                        </div>
+                        <span className="text-xs text-slate-500">{articles.length} items</span>
                     </div>
-                    <span className="text-xs text-slate-500">{articles.length} items</span>
                 </div>
                 
-                {articles.length > 0 && (
-                    <div className="flex gap-2 no-drag">
+                <div className="flex gap-2 no-drag">
+                   {articles.length > 0 && (
+                        <>
+                        <button
+                          onClick={() => setShowAuthors(!showAuthors)}
+                          className={cn(
+                              "inline-flex items-center gap-2 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all shadow-lg shadow-black/20",
+                              showAuthors 
+                                ? "bg-slate-700 border-slate-600 text-white" 
+                                : "bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200"
+                          )}
+                          title="Toggle Author Column"
+                        >
+                          👤 {showAuthors ? 'Hide' : 'Show'} Authors
+                        </button>
+
                         <button 
                           onClick={onExportBibtex}
                           className="inline-flex items-center gap-2 px-3 py-1.5 bg-purple-900/30 border border-purple-700/50 rounded-lg text-xs font-medium text-purple-300 hover:text-white hover:bg-purple-800/40 transition-all shadow-lg shadow-black/20"
@@ -144,8 +183,9 @@ export function ArticleList({
                         >
                           📥 ZIP
                         </button>
-                    </div>
-                )}
+                        </>
+                    )}
+                </div>
             </div>
 
             {/* Search Input */}
@@ -190,12 +230,14 @@ export function ArticleList({
                 >
                     <span className="truncate">Title</span> <SortIcon field="title" />
                 </div>
-                <div 
-                    className="w-48 px-4 py-2.5 cursor-pointer hover:text-slate-300 transition-colors flex items-center flex-shrink-0"
-                    onClick={() => handleSort('authors')}
-                >
-                    Author <SortIcon field="authors" />
-                </div>
+                {showAuthors && (
+                    <div 
+                        className="w-48 px-4 py-2.5 cursor-pointer hover:text-slate-300 transition-colors flex items-center flex-shrink-0"
+                        onClick={() => handleSort('authors')}
+                    >
+                        Author <SortIcon field="authors" />
+                    </div>
+                )}
                 <div 
                     className="w-24 px-4 py-2.5 text-center cursor-pointer hover:text-slate-300 transition-colors flex items-center justify-center flex-shrink-0"
                     onClick={() => handleSort('year')}
@@ -261,11 +303,13 @@ export function ArticleList({
                                 {article.title || article.filename}
                             </div>
                         </div>
-                        <div className="w-48 px-4 py-2 flex-shrink-0">
-                            <div className="text-slate-500 truncate text-sm" title={article.authors || ''}>
-                                {article.authors || '—'}
+                        {showAuthors && (
+                            <div className="w-48 px-4 py-2 flex-shrink-0">
+                                <div className="text-slate-500 truncate text-sm" title={article.authors || ''}>
+                                    {article.authors || '—'}
+                                </div>
                             </div>
-                        </div>
+                        )}
                         <div className="w-24 px-4 py-2 text-center flex-shrink-0">
                             <span className={cn(
                                 "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium",

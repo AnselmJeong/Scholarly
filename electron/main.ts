@@ -42,7 +42,8 @@ function calculateFileHash(filePath: string): Promise<string> {
 // Filename parser helper
 const parseFilename = (filename: string) => {
   // Expected format: YYYY - Author - Title.pdf
-  const match = filename.match(/^(\d{4})\s*-\s*(.+?)\s*-\s*(.+?)(?:\.pdf)?$/i);
+  // Use \s+ to require spaces around hyphens, avoiding split on hyphenated names (e.g. Moreno-Ortega)
+  const match = filename.match(/^(\d{4})\s+-\s+(.+?)\s+-\s+(.+?)(?:\.pdf)?$/i);
   if (match) {
       return {
           year: parseInt(match[1]),

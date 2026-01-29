@@ -381,6 +381,9 @@ function App() {
   const selectedArticle = articles.find(a => a.id === selectedArticleId) || null;
   const allKeywordNames = keywords.map(k => k.keyword);
 
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
   if (isLoading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-white flex-col gap-4 animate-in fade-in duration-500">
@@ -405,6 +408,7 @@ function App() {
        )}
 
        <ResizablePanels
+         isLeftPanelVisible={isSidebarOpen}
          leftPanel={
            <SidebarTabs 
              keywords={filteredKeywords} 
@@ -433,6 +437,8 @@ function App() {
                  onSearchChange={setFilenameFilter}
                  onRescan={handlePruneOrphans}
                  onSelectFolder={handleSelectRoot}
+                 isSidebarOpen={isSidebarOpen}
+                 onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                />
            ) : (
                <GuidanceViewer
