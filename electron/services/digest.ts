@@ -4,7 +4,7 @@ import path from 'node:path';
 import { parseDocument, stringify } from 'yaml';
 
 export const DIGEST_SCHEMA_VERSION = 'scholarly-digest/v1' as const;
-export const DIGEST_PROMPT_VERSION = 'scholarly-digest-v1' as const;
+export const DIGEST_PROMPT_VERSION = 'scholarly-digest-v2' as const;
 export const PDF_EXTRACTION_VERSION = 'pdf-pages-v1' as const;
 
 export type DigestUnitType = 'article' | 'book_chapter';
@@ -56,6 +56,8 @@ export interface DigestFrontmatter {
   digest_id: string;
   unit_type: DigestUnitType;
   source_relpath: string;
+  source_mime_type: 'application/pdf';
+  source_locator_scheme: 'pdf_physical_page_v1';
   source_sha256: string;
   source_size_bytes: number;
   source_page_count: number;
@@ -88,16 +90,17 @@ export interface DigestFrontmatter {
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+  warnings: string[];
 }
 
 const REQUIRED_H1 = [
   '0. Snapshot',
   '1. Prerequisite Knowledge',
-  '2. Motivation & the Gap',
-  '3. Section-by-Section Walkthrough',
-  '4. Where Readers Get Confused',
-  '5. Takeaway & Reframing',
-  '6. Coverage Check'
+  '2. Purpose & Scope',
+  '3. Section-by-Section Digest',
+  '4. Key Findings & Details',
+  '5. Integrated Summary',
+  '6. Coverage Map'
 ] as const;
 
 const REQUIRED_PREREQUISITES = [
@@ -108,11 +111,10 @@ const REQUIRED_PREREQUISITES = [
   '1.5 Intellectual lineage'
 ] as const;
 
-const WALKTHROUGH_LABELS = [
-  'What it introduces',
-  'Why here',
-  'Hidden commitments',
-  'Bridge'
+const SECTION_DIGEST_LABELS = [
+  'Main content',
+  'Key evidence',
+  'Connection'
 ] as const;
 
 export function sha256(value: string | Buffer): string {
@@ -184,11 +186,52 @@ export function getDigestOutputPath(sourcePdfPath: string, unit: Pick<DigestSour
   );
 }
 
-export function classifyArticlePaperType(title: string, abstract: string | null): 'REVIEW' | 'EMPIRICAL' {
-  const evidence = `${title}\n${abstract ?? ''}`.toLowerCase();
-  return /\b(systematic review|scoping review|narrative review|literature review|meta-analysis|review article)\b/.test(evidence)
-    ? 'REVIEW'
-    : 'EMPIRICAL';
+export function validatePortableSourceRelpath(sourceRelpath: string): void {
+  const normalized = sourceRelpath.trim();
+  const segments = normalized.split('/');
+  if (
+    !normalized ||
+    normalized !== sourceRelpath ||
+    normalized.includes('\\') ||
+    normalized.includes('\0') ||
+    path.posix.isAbsolute(normalized) ||
+    /^[A-Za-z]:/.test(normalized) ||
+    segments.some(segment => segment === '' || segment === '.' || segment === '..')
+  ) {
+    throw new Error('sourceRelpath must be a portable path beneath the configured library root.');
+  }
+}
+
+export function classifyArticlePaperType(
+  title: string,
+  abstract: string | null,
+  sourceText = ''
+): 'REVIEW' | 'EMPIRICAL' {
+  const metadataEvidence = `${title}\n${abstract ?? ''}`.toLowerCase();
+  const documentEvidence = sourceText.toLowerCase();
+  const combinedEvidence = `${metadataEvidence}\n${documentEvidence}`;
+  const explicitReview = /\b(systematic review|scoping review|narrative review|literature review|meta-analysis|review article|this (?:paper|article) reviews?|we review|an overview of)\b/.test(combinedEvidence);
+  if (explicitReview) return 'REVIEW';
+
+  // Require positive empirical structure instead of treating every unlabelled
+  // article as an experiment. A conceptual article mislabelled EMPIRICAL makes
+  // the prompt demand Methods and Results sections that do not exist.
+  const hasMethodsHeading = /(?:^|\n)\s*(?:\d+(?:\.\d+)*[.)]?\s*)?(?:materials? and methods?|methods?|methodology|participants?)\s*(?:\n|$)/im.test(sourceText);
+  const hasResultsHeading = /(?:^|\n)\s*(?:\d+(?:\.\d+)*[.)]?\s*)?(?:results?|findings?)\s*(?:\n|$)/im.test(sourceText);
+  const explicitEmpiricalDesign = /\b(?:we (?:recruited|enrolled|randomized|randomised|measured|tested|conducted)|participants? (?:were|completed)|randomi[sz]ed controlled trial|double-blind|sample consisted of)\b/.test(combinedEvidence);
+  return (hasMethodsHeading && hasResultsHeading) || explicitEmpiricalDesign
+    ? 'EMPIRICAL'
+    : 'REVIEW';
+}
+
+export const MAX_CONSECUTIVE_DIGEST_FAILURES = 3;
+
+export function shouldStopDigestBatch(
+  consecutiveFailures: number,
+  hasRemainingItems: boolean,
+  maximumFailures = MAX_CONSECUTIVE_DIGEST_FAILURES
+): boolean {
+  return hasRemainingItems && consecutiveFailures >= maximumFailures;
 }
 
 function findAll(source: string, pattern: RegExp): string[] {
@@ -211,7 +254,7 @@ function prerequisiteBody(body: string, heading: string, nextHeading?: string): 
   const contentStart = start + startToken.length;
   const end = nextHeading
     ? body.indexOf(`### ${nextHeading}`, contentStart)
-    : body.indexOf('# 2. Motivation & the Gap', contentStart);
+    : body.indexOf('# 2. Purpose & Scope', contentStart);
   return body.slice(contentStart, end < 0 ? body.length : end).trim();
 }
 
@@ -224,7 +267,7 @@ function countKoreanEojeol(value: string): number {
 }
 
 function validateRange(
-  errors: string[],
+  warnings: string[],
   label: string,
   value: string,
   language: DigestOutputLanguage,
@@ -234,23 +277,29 @@ function validateRange(
   const count = language === 'ko' ? countKoreanEojeol(value) : countEnglishWords(value);
   const [minimum, maximum] = language === 'ko' ? koreanRange : englishRange;
   if (count < minimum || count > maximum) {
-    errors.push(`${label} length is ${count}; expected ${minimum}-${maximum} ${language === 'ko' ? 'Korean eojeol' : 'English words'}.`);
+    warnings.push(`${label} length is ${count}; target ${minimum}-${maximum} ${language === 'ko' ? 'Korean eojeol' : 'English words'}.`);
   }
 }
 
-function validateMath(body: string, errors: string[]): void {
+function validateMath(body: string, warnings: string[]): void {
   const withoutEscaped = body.replace(/\\\$/g, '');
   const blockCount = withoutEscaped.match(/\$\$/g)?.length ?? 0;
-  if (blockCount % 2 !== 0) errors.push('Unbalanced $$ math delimiters.');
+  if (blockCount % 2 !== 0) warnings.push('Unbalanced $$ math delimiters.');
   const inlineCandidate = withoutEscaped.replace(/\$\$[\s\S]*?\$\$/g, '');
   const inlineCount = inlineCandidate.match(/\$/g)?.length ?? 0;
-  if (inlineCount % 2 !== 0) errors.push('Unbalanced $ math delimiters.');
+  if (inlineCount % 2 !== 0) warnings.push('Unbalanced $ math delimiters.');
   if (/\\\(|\\\)|\\\[|\\\]/.test(body)) {
-    errors.push('Math must use $...$ or $$...$$ delimiters.');
+    warnings.push('Math should use $...$ or $$...$$ delimiters.');
   }
 }
 
-function validateLocators(body: string, unit: DigestSourceUnit, sourceText: string, errors: string[]): void {
+function validateLocators(
+  body: string,
+  unit: DigestSourceUnit,
+  sourceText: string,
+  errors: string[],
+  warnings: string[]
+): void {
   const locators = body.match(/\[Source:[^\]]+\]/g) ?? [];
   if (locators.length === 0) {
     errors.push('The digest must contain source locators for source-specific claims.');
@@ -278,10 +327,44 @@ function validateLocators(body: string, unit: DigestSourceUnit, sourceText: stri
           ? new RegExp(`\\bTable\\s*${escapedId}\\b`, 'i')
           : new RegExp(`(?:\\bSection\\s*)?${escapedId}\\b`, 'i');
       if (!pattern.test(sourceText)) {
-        errors.push(`Referenced ${identifier.kind} ${identifier.id} was not found in the extracted source.`);
+        warnings.push(`Referenced ${identifier.kind} ${identifier.id} was not found as an exact string in the extracted source.`);
       }
     }
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Repair harmless wrapper/heading variance deterministically before validation.
+ * This does not add source claims or fabricate missing sections.
+ */
+export function normalizeGeneratedDigestBody(candidate: string): string {
+  let body = candidate.replace(/\r\n/g, '\n').trim();
+
+  const fenced = body.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  if (fenced) body = fenced[1].trim();
+
+  if (body.startsWith('---\n')) {
+    const closing = body.indexOf('\n---\n', 4);
+    if (closing >= 0) body = body.slice(closing + 5).trim();
+  }
+
+  for (const heading of REQUIRED_H1) {
+    body = body.replace(
+      new RegExp(`^#{1,6}\\s+${escapeRegExp(heading)}\\s*$`, 'gm'),
+      `# ${heading}`
+    );
+  }
+  for (const heading of REQUIRED_PREREQUISITES) {
+    body = body.replace(
+      new RegExp(`^#{1,6}\\s+${escapeRegExp(heading)}\\s*$`, 'gm'),
+      `### ${heading}`
+    );
+  }
+  return body.trim();
 }
 
 export function validateDigestBody(
@@ -291,8 +374,9 @@ export function validateDigestBody(
   options: { enforceLength?: boolean } = {}
 ): ValidationResult {
   const errors: string[] = [];
-  const body = candidate.replace(/\r\n/g, '\n').trim();
-  if (!body) return { valid: false, errors: ['Digest body is empty.'] };
+  const warnings: string[] = [];
+  const body = normalizeGeneratedDigestBody(candidate);
+  if (!body) return { valid: false, errors: ['Digest body is empty.'], warnings };
   if (body.startsWith('---')) errors.push('The LLM body must not include YAML frontmatter.');
   if (/```/.test(body)) errors.push('The digest body must not include code fences.');
   if (unit.paperType !== 'REVIEW' && unit.paperType !== 'EMPIRICAL' && unit.paperType !== 'BOOK_CHAPTER') {
@@ -315,25 +399,27 @@ export function validateDigestBody(
   const h3 = findAll(body, /^### (.+)$/gm);
   for (const required of REQUIRED_PREREQUISITES) {
     if (h3.filter(value => value === required).length !== 1) {
-      errors.push(`Required prerequisite header must appear exactly once: ${required}.`);
+      warnings.push(`Recommended prerequisite header is missing or duplicated: ${required}.`);
     }
   }
 
-  const walkthrough = sectionBody(body, REQUIRED_H1[3], REQUIRED_H1[4]);
-  const majorSections = walkthrough.split(/^\*\*[^\n]+ —\*\*\s*$/gm).slice(1).filter(Boolean);
-  if (majorSections.length < 1 || majorSections.length > 6) {
-    errors.push('The walkthrough must contain between 1 and 6 major sections using **[Section name] —** headings.');
+  const sectionDigest = sectionBody(body, REQUIRED_H1[3], REQUIRED_H1[4]);
+  const majorSections = sectionDigest.split(/^\*\*[^\n]+ —\*\*\s*$/gm).slice(1).filter(Boolean);
+  if (majorSections.length < 1) {
+    errors.push('The section digest must contain at least one major section using a **[Section name] —** heading.');
+  } else if (majorSections.length > 8) {
+    warnings.push('The section digest contains more than 8 major sections; consider merging minor sections.');
   }
   for (const [index, major] of majorSections.entries()) {
-    for (const label of WALKTHROUGH_LABELS) {
+    for (const label of SECTION_DIGEST_LABELS) {
       if ((major.match(new RegExp(`\\*\\*${label}:\\*\\*`, 'g'))?.length ?? 0) !== 1) {
-        errors.push(`Walkthrough section ${index + 1} must contain exactly one **${label}:** label.`);
+        warnings.push(`Section digest ${index + 1} should contain one **${label}:** label.`);
       }
     }
   }
 
-  validateMath(body, errors);
-  validateLocators(body, unit, extracted.pages.map(page => page.text).join('\n'), errors);
+  validateMath(body, warnings);
+  validateLocators(body, unit, extracted.pages.map(page => page.text).join('\n'), errors, warnings);
 
   const prose = body
     .replace(/^#{1,6} .+$/gm, '')
@@ -348,10 +434,10 @@ export function validateDigestBody(
   }
 
   if (options.enforceLength !== false) {
-    validateRange(errors, 'Snapshot', sectionBody(body, REQUIRED_H1[0], REQUIRED_H1[1]), unit.outputLanguage, [40, 100], [20, 90]);
+    validateRange(warnings, 'Snapshot', sectionBody(body, REQUIRED_H1[0], REQUIRED_H1[1]), unit.outputLanguage, [40, 100], [20, 90]);
     for (let index = 0; index < REQUIRED_PREREQUISITES.length; index += 1) {
       validateRange(
-        errors,
+        warnings,
         REQUIRED_PREREQUISITES[index],
         prerequisiteBody(body, REQUIRED_PREREQUISITES[index], REQUIRED_PREREQUISITES[index + 1]),
         unit.outputLanguage,
@@ -359,29 +445,30 @@ export function validateDigestBody(
         [45, 170]
       );
     }
-    validateRange(errors, 'Motivation & the Gap', sectionBody(body, REQUIRED_H1[2], REQUIRED_H1[3]), unit.outputLanguage, [160, 240], [70, 220]);
+    validateRange(warnings, 'Purpose & Scope', sectionBody(body, REQUIRED_H1[2], REQUIRED_H1[3]), unit.outputLanguage, [120, 260], [50, 220]);
     for (const [index, major] of majorSections.entries()) {
-      validateRange(errors, `Walkthrough section ${index + 1}`, major, unit.outputLanguage, [200, 480], [90, 380]);
+      validateRange(warnings, `Section digest ${index + 1}`, major, unit.outputLanguage, [180, 520], [80, 420]);
     }
-    validateRange(errors, 'Where Readers Get Confused', sectionBody(body, REQUIRED_H1[4], REQUIRED_H1[5]), unit.outputLanguage, [160, 240], [60, 220]);
-    validateRange(errors, 'Takeaway & Reframing', sectionBody(body, REQUIRED_H1[5], REQUIRED_H1[6]), unit.outputLanguage, [176, 264], [70, 240]);
+    validateRange(warnings, 'Key Findings & Details', sectionBody(body, REQUIRED_H1[4], REQUIRED_H1[5]), unit.outputLanguage, [160, 360], [70, 300]);
+    validateRange(warnings, 'Integrated Summary', sectionBody(body, REQUIRED_H1[5], REQUIRED_H1[6]), unit.outputLanguage, [160, 320], [70, 280]);
   }
 
   const coverageLines = sectionBody(body, REQUIRED_H1[6])
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean);
-  if (coverageLines.length < 4 || coverageLines.length > 6) {
-    errors.push('Coverage Check must contain 4-6 short non-empty lines.');
+  if (coverageLines.length < 4 || coverageLines.length > 8) {
+    warnings.push('Coverage Map should contain 4-8 short non-empty lines.');
   }
 
   if (!body.endsWith('.') && !body.endsWith('!') && !body.endsWith('?') && !body.endsWith('다.')) {
-    errors.push('The digest appears abruptly truncated; it must end with a complete sentence.');
+    warnings.push('The digest may end without terminal punctuation.');
   }
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, warnings };
 }
 
 export function buildDigestFrontmatter(unit: DigestSourceUnit, body: string, generatedAt = new Date().toISOString()): DigestFrontmatter {
+  validatePortableSourceRelpath(unit.sourceRelpath);
   if (unit.unitType === 'book_chapter' && (!unit.bookTitle?.trim() || !unit.chapterTitle?.trim())) {
     throw new Error('Book-chapter digests require bookTitle and chapterTitle metadata.');
   }
@@ -391,6 +478,8 @@ export function buildDigestFrontmatter(unit: DigestSourceUnit, body: string, gen
     digest_id: calculateDigestId(unit),
     unit_type: unit.unitType,
     source_relpath: unit.sourceRelpath,
+    source_mime_type: 'application/pdf',
+    source_locator_scheme: 'pdf_physical_page_v1',
     source_sha256: unit.sourceSha256,
     source_size_bytes: unit.sourceSizeBytes,
     source_page_count: unit.sourcePageCount,
@@ -453,6 +542,7 @@ export function validateCompletedDigest(
   options: { enforceLength?: boolean } = {}
 ): ValidationResult {
   const errors: string[] = [];
+  const warnings: string[] = [];
   try {
     const parsed = parseDigestDocument(content);
     const expectedFrontmatter = buildDigestFrontmatter(unit, parsed.body, String(parsed.frontmatter.generated_at ?? ''));
@@ -464,10 +554,11 @@ export function validateCompletedDigest(
     }
     const bodyValidation = validateDigestBody(parsed.body, unit, extracted, options);
     errors.push(...bodyValidation.errors);
+    warnings.push(...bodyValidation.warnings);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, warnings };
 }
 
 export function inspectDigestStatus(content: string | null, expectedFingerprint: string): DigestStatus {
@@ -557,25 +648,29 @@ export function formatPageMarkedSource(pages: ExtractedPage[]): string {
     .join('\n\n');
 }
 
-export const DIGEST_SYSTEM_PROMPT = `You are an expert researcher and mentor in neuroscience and psychiatry, giving a
-~1-hour seminar to an intelligent PhD student who is NOT yet an expert in this
-exact subfield. Adopt one consistent voice: a calm, pedagogical mentor.
+export const DIGEST_SYSTEM_PROMPT = `You are an expert academic explainer in neuroscience and psychiatry. Create a
+faithful, content-dense digest for an intelligent PhD student who wants to absorb
+the supplied source as quickly as possible without losing its substantive detail.
+Adopt one consistent voice: calm, precise, and explanatory.
 
 ════════ GLOBAL RULES (obey for the entire output) ════════
 
 - Output language: {{OUTPUT_LANGUAGE}}.
 - Use the section headers below VERBATIM, in this exact order. Output nothing before the first header and nothing after the last section.
-- Prose-first. Use short connected paragraphs, not bullet-only lists. Bullets are allowed only inside "Where Readers Get Confused" and the final checklist.
-- Length discipline: stay within the per-section word budgets given in brackets. Treat budgets as targets (±20%), not suggestions. Do not pad; do not truncate.
+- Your primary job is content compression, not criticism. Reconstruct what the source says, how it supports its claims, and how its sections fit together.
+- Do NOT infer hidden commitments, criticize the authors, introduce external debates, or propose future work unless the source itself explicitly does so. Report author-stated limitations faithfully as source content.
+- This Markdown will be indexed by ScholarPen. Preserve distinctive source terminology, English technical terms, acronyms, instrument names, method names, and named constructs alongside their explanations so both Korean and English searches can retrieve the digest.
+- Prose-first. Use short connected paragraphs, not bullet-only lists. Bullets are allowed in "Key Findings & Details" and "Coverage Map" when they improve scanability.
+- Length discipline: treat the per-section word budgets as guidance. Prefer complete, grounded coverage over exact counts. Do not pad or truncate to hit a number.
 - Math: render every formula in LaTeX ($…$ inline, $$…$$ block) and explain each symbol at an advanced-undergraduate level before interpreting the whole.
 - Cite the paper's own sections, pages, figures, and tables when referring to specific arguments, methods, or results.
 
 ════════ SOURCE-TYPE BRANCH (decide once, then keep the same schema) ════════
 
 The verified metadata supplies exactly one source type: REVIEW, EMPIRICAL, or BOOK_CHAPTER. Follow that branch; do not reclassify it.
-- If EMPIRICAL: in Part 2 explain the specific gap or question addressed by the study. In Part 3 treat Methods and Results as their own major sections.
-- If REVIEW: explain why the author wrote the review and what synthesis or correction the author believes is needed.
-- If BOOK_CHAPTER: treat the supplied chapter, not the whole book, as the source unit. Explain the chapter's pedagogical or argumentative role and do not invent claims about chapters that were not supplied.
+- If EMPIRICAL: in Part 2 state the research question and scope. In Part 3 treat Methods and Results as their own major sections and preserve important sample, measure, analysis, and result details.
+- If REVIEW: state the review's purpose and scope, then preserve the major conceptual distinctions, evidence, and conclusions organized by the authors.
+- If BOOK_CHAPTER: treat the supplied chapter, not the whole book, as the source unit. Explain the chapter's scope and content using only supplied context.
 
 ════════ OUTPUT TEMPLATE (fill each header; keep headers verbatim) ════════
 
@@ -600,45 +695,41 @@ A compact term:definition list is permitted in this subsection only.
 
 ### 1.5 Intellectual lineage
 
-# 2. Motivation & the Gap
+# 2. Purpose & Scope
 
 [~200 words]
 
-Explain in plain but precise language (a) what problem or conceptual confusion motivated the author, and (b) what the author believes is missing or misunderstood in the existing literature. For a book chapter, explain the chapter's question and role in the book-level argument using only supplied context.
+State what the source sets out to explain, review, or test; what material it covers; and the organizing question or thesis. Describe the authors' stated purpose without evaluating whether it succeeds.
 
-# 3. Section-by-Section Walkthrough
+# 3. Section-by-Section Digest
 
-Cover the source's major sections IN ORDER. Cap at the 6 most important; if the source has more, merge minor ones. For EACH major section, use the following four paragraph labels and write ~250–400 words total:
+Cover the source's major sections IN THEIR ORIGINAL ORDER. Use up to 8 entries and merge only genuinely minor subsections. Preserve substantive definitions, mechanisms, methods, results, examples, distinctions, qualifications, and author-stated limitations. For EACH entry, use these three labels and write enough to make that part understandable without reopening the PDF:
 
 **[Section name] —**
 
-**What it introduces:** Explain key concepts slowly and comprehensively; name the author's repeatedly cited arguments and assumptions.
+**Main content:** Faithfully explain the section's claims, concepts, and reasoning in connected prose. Preserve the original section name and important searchable terms.
 
-**Why here:** Explain why these concepts appear at this point.
+**Key evidence:** Preserve important methods, data, examples, figures, tables, or cited evidence. If the section is conceptual and contains no empirical evidence, state the definitions or distinctions doing the argumentative work.
 
-**Hidden commitments:** Identify implicit assumptions or theoretical commitments.
+**Connection:** Briefly explain how this content follows from the preceding section and what content it establishes for the next section. Describe structure, not hidden motives. Include at least one physical PDF page locator in every section entry.
 
-**Bridge:** Explain how this section sets up the next section.
+# 4. Key Findings & Details
 
-# 4. Where Readers Get Confused
+[~200–350 words; bullets allowed]
 
-[~200 words; bullets allowed]
+Collect the source's most important findings, mechanisms, definitions, quantitative results, comparisons, and author-stated limitations. Prioritize details a reader would want to remember or retrieve later. Do not add criticism or external interpretation.
 
-- Familiar-looking terms used in a special or non-standard way
-- Conceptual leaps the author leaves unexplained
-- Historical or theoretical background assumed rather than stated
-
-# 5. Takeaway & Reframing
+# 5. Integrated Summary
 
 [~220 words]
 
-Explain (a) the new perspective the author wants the reader to retain, (b) how the source reshapes the field or reframes an existing debate, and (c) what empirical or theoretical work it implicitly calls for next.
+Synthesize the complete source into a coherent account: the main thesis or research question, the reasoning or evidence chain, the principal findings, and the authors' conclusion. This should be a faithful compression of the source, not a review of its quality.
 
-# 6. Coverage Check
+# 6. Coverage Map
 
-[4–6 short lines; bullets allowed]
+[4–8 short lines; bullets allowed]
 
-Confirm that you (i) used every header verbatim, (ii) stayed within the requested budgets, (iii) rendered all formulas in LaTeX, and (iv) matched the source-type branch. List anything deliberately compressed and why.
+List the source sections covered by the digest and the physical PDF page ranges used for each. Note any unreadable or deliberately compressed portion. This is a reader-facing map, not a self-evaluation of your writing.
 
 ════════ SOURCE-GROUNDING CONTRACT ════════
 
@@ -646,7 +737,9 @@ Confirm that you (i) used every header verbatim, (ii) stayed within the requeste
 - Base every source-specific claim only on the supplied document and verified metadata. Do not fill missing source content from memory or general knowledge.
 - Clearly distinguish (a) what the source explicitly reports, (b) the author's interpretation, and (c) your pedagogical explanation.
 - Attach a source locator whenever discussing a specific argument, method, result, figure, or table. Prefer this form: [Source: §3.2, pp. 6–8, Fig. 2]
-- Use only page, section, figure, and table identifiers present in the supplied source. Never invent a locator.
+- IMPORTANT: page locators MUST use the physical <page number="…"> values supplied by the application. Never use a journal's printed pagination, citation page numbers, line numbers, or reference numbers as PDF page locators.
+- Use only page, section, figure, and table identifiers present in the supplied source. Never invent a locator. If an exact section label cannot be verified, cite only the physical PDF page.
+- Locators are machine-readable links from ScholarPen search results back to the original PDF. Keep the exact syntax [Source: ...] and attach locators close to the claims they support.
 - If the source is incomplete, unreadable, or does not establish a requested point, say that it could not be confirmed from the supplied text.
 - Do not invent DOI, author, journal, year, sample size, statistical result, equation, section number, figure number, table number, or page number.
 - Do not output YAML frontmatter, JSON, XML, code fences, commentary, or content outside the required Markdown body.

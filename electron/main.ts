@@ -4,6 +4,7 @@ import path from 'node:path'
 import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
 import { checkOllamaStatus, listModels, setModel, chatWithPaper, setChatModel, setGuideModel, setOllamaApiKey, generateGuidance } from './services/ai'
+import type { ChatCompletionUsage, DigestGenerationPhase } from './services/ai'
 import { loadSettings, saveSettings, getDefaultGuidePrompt } from './store'
 import type { AppSettings, SettingsUpdate } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
@@ -22,12 +23,14 @@ import {
   classifyArticlePaperType,
   inspectDigestStatus,
   getDigestOutputPath,
+  normalizeGeneratedDigestBody,
   parseDigestDocument,
   publishDigestAtomically,
   serializeDigest,
+  shouldStopDigestBatch,
   validateDigestBody
 } from './services/digest'
-import type { DigestSourceUnit, DigestStatus, MetadataSource } from './services/digest'
+import type { DigestSourceUnit, DigestStatus, ExtractedDocument, MetadataSource } from './services/digest'
 
 // Disable Hardware Acceleration to prevent GPU process crashes and startup delay
 app.disableHardwareAcceleration();
@@ -91,6 +94,19 @@ interface DigestGenerationResult {
   outcome?: DigestGenerationOutcome;
   status?: DigestStatus;
   error?: string;
+  warnings?: string[];
+  cancelled?: boolean;
+}
+
+interface DigestAttemptDiagnostic {
+  generationAttempt: number;
+  error: string | null;
+  warnings: string[];
+  finishReason: string | null;
+  usage: ChatCompletionUsage | null;
+  requestAttempts: number | null;
+  responseCharacters: number;
+  outputPreview: string;
 }
 
 interface DigestFailureDiagnostic {
@@ -98,6 +114,7 @@ interface DigestFailureDiagnostic {
   error: string;
   failedAt: string;
   expectedFingerprint: string;
+  attempts?: DigestAttemptDiagnostic[];
 }
 
 const sourceShaCache = new Map<string, { size: number; mtimeMs: number; sha256: string }>();
@@ -141,14 +158,20 @@ function saveDigestDiagnostics(): void {
   fs.renameSync(temporaryPath, diagnosticsPath);
 }
 
-function recordDigestFailure(filePath: string, error: string, expectedFingerprint: string): void {
+function recordDigestFailure(
+  filePath: string,
+  error: string,
+  expectedFingerprint: string,
+  attempts: DigestAttemptDiagnostic[] = []
+): void {
   try {
     loadDigestDiagnostics();
     digestFailureDiagnostics.set(filePath, {
       filePath,
       error,
       failedAt: new Date().toISOString(),
-      expectedFingerprint
+      expectedFingerprint,
+      attempts
     });
     saveDigestDiagnostics();
   } catch (diagnosticError) {
@@ -194,7 +217,7 @@ function parseAuthors(authors: string | null | undefined): string[] {
 async function buildArticleSourceUnit(
   filePath: string,
   sourceSha256: string,
-  sourcePageCount: number
+  extracted: ExtractedDocument
 ): Promise<DigestSourceUnit> {
   if (!currentRootPath) throw new Error('Select a Scholarly library root first.');
   const [article] = await getDb().select().from(articles).where(eq(articles.filePath, filePath));
@@ -218,9 +241,9 @@ async function buildArticleSourceUnit(
     sourceRelpath,
     sourceSha256,
     sourceSizeBytes: stat.size,
-    sourcePageCount,
+    sourcePageCount: extracted.pageCount,
     sourcePageStart: 1,
-    sourcePageEnd: sourcePageCount,
+    sourcePageEnd: extracted.pageCount,
     title,
     authors: parseAuthors(article?.authors ?? fallback.authors),
     year: article?.year ?? fallback.year,
@@ -228,7 +251,11 @@ async function buildArticleSourceUnit(
     doi: article?.doi?.trim() || null,
     metadataSource: normalizeMetadataSource(article?.metadataSource, article?.doi),
     outputLanguage: settings.ai.outputLanguage,
-    paperType: classifyArticlePaperType(title, article?.abstract ?? null),
+    paperType: classifyArticlePaperType(
+      title,
+      article?.abstract ?? null,
+      extracted.pages.map(page => page.text).join('\n')
+    ),
     keywords: keywordRows.map(row => row.keyword),
     generatorAppVersion: app.getVersion(),
     generatorModel: settings.ai.guideModel,
@@ -267,16 +294,36 @@ async function getDigestStatusForPdf(filePath: string, settings = loadSettings()
   }
 }
 
-async function ensureGuidanceForPdf(filePath: string, force: boolean = false): Promise<DigestGenerationResult> {
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+interface DigestRunOptions {
+  signal?: AbortSignal;
+  onProgress?: (phase: DigestGenerationPhase | 'extracting' | 'validating' | 'repairing' | 'publishing', detail: string) => void;
+}
+
+const MAX_GENERATION_ATTEMPTS = 2;
+
+async function ensureGuidanceForPdf(
+  filePath: string,
+  force: boolean = false,
+  options: DigestRunOptions = {}
+): Promise<DigestGenerationResult> {
   let expectedFingerprint = '';
+  const attempts: DigestAttemptDiagnostic[] = [];
   try {
+    if (options.signal?.aborted) {
+      return { success: false, cancelled: true, error: 'Digest generation cancelled.' };
+    }
     const summaryPath = getSummaryPathForPdf(filePath);
     if (!fs.existsSync(filePath)) {
       return { success: false, error: `PDF not found: ${filePath}` };
     }
     const sourceSha256 = await calculateSha256(filePath);
+    options.onProgress?.('extracting', 'Extracting page-marked PDF text');
     const extracted = await extractDocument(filePath);
-    const sourceUnit = await buildArticleSourceUnit(filePath, sourceSha256, extracted.pageCount);
+    const sourceUnit = await buildArticleSourceUnit(filePath, sourceSha256, extracted);
     expectedFingerprint = calculateContractFingerprint(sourceUnit);
     const existingContent = fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, 'utf8') : null;
     const existingStatus = inspectDigestStatus(existingContent, expectedFingerprint);
@@ -295,29 +342,63 @@ async function ensureGuidanceForPdf(filePath: string, force: boolean = false): P
       return { success: true, summaryPath, outcome: 'skipped_current', status: 'current' };
     }
 
-    const body = await generateGuidance({
-      document: extracted,
-      sourceUnit,
-      additionalGuidance: loadGuidancePrompt()
-    });
-    const bodyValidation = validateDigestBody(body, sourceUnit, extracted);
-    if (!bodyValidation.valid) {
-      throw new Error(`Generated digest body failed validation: ${bodyValidation.errors.join(' | ')}`);
-    }
-    const frontmatter = buildDigestFrontmatter(sourceUnit, body);
-    const completeDigest = serializeDigest(frontmatter, body);
-    publishDigestAtomically(summaryPath, completeDigest, sourceUnit, extracted);
-    clearDigestFailure(filePath);
+    let validationFeedback: string[] | undefined;
+    for (let generationAttempt = 1; generationAttempt <= MAX_GENERATION_ATTEMPTS; generationAttempt += 1) {
+      if (generationAttempt > 1) {
+        options.onProgress?.('repairing', `Regenerating after contract check (${generationAttempt}/${MAX_GENERATION_ATTEMPTS})`);
+      }
+      const completion = await generateGuidance({
+        document: extracted,
+        sourceUnit,
+        additionalGuidance: loadGuidancePrompt(),
+        validationFeedback
+      }, {
+        signal: options.signal,
+        onProgress: options.onProgress
+      });
+      const body = normalizeGeneratedDigestBody(completion.content);
+      options.onProgress?.('validating', `Checking digest contract (${generationAttempt}/${MAX_GENERATION_ATTEMPTS})`);
+      const bodyValidation = validateDigestBody(body, sourceUnit, extracted);
+      attempts.push({
+        generationAttempt,
+        error: bodyValidation.valid ? null : bodyValidation.errors.join(' | '),
+        warnings: bodyValidation.warnings,
+        finishReason: completion.finishReason,
+        usage: completion.usage,
+        requestAttempts: completion.requestAttempts,
+        responseCharacters: body.length,
+        outputPreview: body.slice(0, 4_000)
+      });
+      if (!bodyValidation.valid) {
+        validationFeedback = bodyValidation.errors;
+        if (generationAttempt < MAX_GENERATION_ATTEMPTS) continue;
+        throw new Error(`Generated digest body failed validation after ${MAX_GENERATION_ATTEMPTS} attempts: ${bodyValidation.errors.join(' | ')}`);
+      }
 
-    return {
-      success: true,
-      summaryPath,
-      outcome: existingIsPublishedDigest ? 'updated' : 'created',
-      status: 'current'
-    };
+      const frontmatter = buildDigestFrontmatter(sourceUnit, body);
+      const completeDigest = serializeDigest(frontmatter, body);
+      options.onProgress?.('publishing', 'Publishing validated digest');
+      publishDigestAtomically(summaryPath, completeDigest, sourceUnit, extracted);
+      clearDigestFailure(filePath);
+      if (bodyValidation.warnings.length > 0) {
+        console.warn(`Digest published with ${bodyValidation.warnings.length} quality warning(s) for ${filePath}: ${bodyValidation.warnings.join(' | ')}`);
+      }
+
+      return {
+        success: true,
+        summaryPath,
+        outcome: existingIsPublishedDigest ? 'updated' : 'created',
+        status: 'current',
+        warnings: bodyValidation.warnings
+      };
+    }
+    throw new Error('Digest generation did not produce a result.');
   } catch (error) {
+    if (options.signal?.aborted || isAbortError(error)) {
+      return { success: false, cancelled: true, error: 'Digest generation cancelled.' };
+    }
     const message = error instanceof Error ? error.message : String(error);
-    recordDigestFailure(filePath, message, expectedFingerprint);
+    recordDigestFailure(filePath, message, expectedFingerprint, attempts);
     return { success: false, status: 'failed', error: message };
   }
 }
@@ -364,9 +445,13 @@ let win: BrowserWindow | null
 let watcher: FileWatcher | null = null
 let currentRootPath: string | null = null
 
-interface GuidanceBatchBase {
+type GuidanceBatchStatus = 'running' | 'cancelling' | 'completed' | 'cancelled' | 'stopped';
+type GuidanceBatchPhase = DigestGenerationPhase | 'queued' | 'extracting' | 'validating' | 'repairing' | 'publishing' | 'cancelling' | 'idle';
+
+interface GuidanceBatchState {
   jobId: string;
   scopePath: string;
+  status: GuidanceBatchStatus;
   total: number;
   current: number;
   created: number;
@@ -375,13 +460,16 @@ interface GuidanceBatchBase {
   failed: number;
   remaining: number;
   errors: Array<{ filePath: string; error: string }>;
+  currentFilePath: string | null;
+  phase: GuidanceBatchPhase;
+  detail: string;
+  stopReason: string | null;
 }
 
-type GuidanceBatchState =
-  | (GuidanceBatchBase & { status: 'running'; currentFilePath: string })
-  | (GuidanceBatchBase & { status: 'completed'; currentFilePath: null });
-
 let guidanceBatchState: GuidanceBatchState | null = null;
+let guidanceBatchAbortController: AbortController | null = null;
+
+const BATCH_PACING_MS = 1_000;
 
 function emitGuidanceBatchProgress(): void {
   if (guidanceBatchState) {
@@ -389,11 +477,44 @@ function emitGuidanceBatchProgress(): void {
   }
 }
 
-async function runGuidanceBatch(jobId: string, scopePath: string, filePaths: string[]): Promise<void> {
+function updateGuidanceBatchProgress(
+  jobId: string,
+  patch: Partial<Pick<GuidanceBatchState, 'phase' | 'detail'>>
+): void {
+  if (!guidanceBatchState || guidanceBatchState.jobId !== jobId) return;
+  guidanceBatchState = { ...guidanceBatchState, ...patch };
+  emitGuidanceBatchProgress();
+}
+
+function waitBetweenBatchItems(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(Object.assign(new Error('Digest generation cancelled.'), { name: 'AbortError' }));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error('Digest generation cancelled.'), { name: 'AbortError' }));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, BATCH_PACING_MS);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function runGuidanceBatch(
+  jobId: string,
+  scopePath: string,
+  filePaths: string[],
+  signal: AbortSignal
+): Promise<void> {
   let created = 0;
   let updated = 0;
   let skippedCurrent = 0;
   let failed = 0;
+  let consecutiveFailures = 0;
   const errors: Array<{ filePath: string; error: string }> = [];
 
   for (let index = 0; index < filePaths.length; index += 1) {
@@ -410,24 +531,82 @@ async function runGuidanceBatch(jobId: string, scopePath: string, filePaths: str
       failed,
       remaining: filePaths.length - created - updated - skippedCurrent,
       errors,
-      currentFilePath: filePath
+      currentFilePath: filePath,
+      phase: 'queued',
+      detail: `Preparing ${path.basename(filePath)}`,
+      stopReason: null
     };
     emitGuidanceBatchProgress();
 
-    const result = await ensureGuidanceForPdf(filePath, false);
+    const result = await ensureGuidanceForPdf(filePath, false, {
+      signal,
+      onProgress: (phase, detail) => updateGuidanceBatchProgress(jobId, { phase, detail })
+    });
+    if (result.cancelled || signal.aborted) {
+      guidanceBatchState = {
+        ...guidanceBatchState,
+        status: 'cancelled',
+        current: index,
+        created,
+        updated,
+        skippedCurrent,
+        failed,
+        remaining: filePaths.length - created - updated - skippedCurrent,
+        currentFilePath: null,
+        phase: 'idle',
+        detail: 'Digest batch cancelled',
+        stopReason: 'Cancelled by user.'
+      };
+      emitGuidanceBatchProgress();
+      guidanceBatchAbortController = null;
+      return;
+    }
     if (!result.success) {
       failed += 1;
+      consecutiveFailures += 1;
       const error = result.error || 'Unknown digest generation failure.';
       errors.push({ filePath, error });
       console.error(`Digest generation failed for ${filePath}: ${error}`);
     } else if (result.outcome === 'skipped_current') {
       skippedCurrent += 1;
+      consecutiveFailures = 0;
     } else if (result.outcome === 'updated') {
       updated += 1;
+      consecutiveFailures = 0;
       win?.webContents.send('data-updated');
     } else if (result.outcome === 'created') {
       created += 1;
+      consecutiveFailures = 0;
       win?.webContents.send('data-updated');
+    }
+
+    if (shouldStopDigestBatch(consecutiveFailures, index + 1 < filePaths.length)) {
+      guidanceBatchState = {
+        ...guidanceBatchState,
+        status: 'stopped',
+        current: index + 1,
+        created,
+        updated,
+        skippedCurrent,
+        failed,
+        remaining: filePaths.length - created - updated - skippedCurrent,
+        currentFilePath: null,
+        phase: 'idle',
+        detail: 'Stopped after 3 consecutive failures',
+        stopReason: 'Stopped automatically after 3 consecutive failures to avoid wasting time and API usage.'
+      };
+      emitGuidanceBatchProgress();
+      guidanceBatchAbortController = null;
+      return;
+    }
+
+    if (index + 1 < filePaths.length) {
+      updateGuidanceBatchProgress(jobId, { phase: 'queued', detail: 'Waiting briefly before the next PDF' });
+      try {
+        await waitBetweenBatchItems(signal);
+      } catch (error) {
+        if (!isAbortError(error)) throw error;
+      }
     }
   }
 
@@ -443,10 +622,14 @@ async function runGuidanceBatch(jobId: string, scopePath: string, filePaths: str
     failed,
     remaining: failed,
     errors,
-    currentFilePath: null
+    currentFilePath: null,
+    phase: 'idle',
+    detail: 'Digest batch complete',
+    stopReason: null
   };
   emitGuidanceBatchProgress();
   win?.webContents.send('data-updated');
+  guidanceBatchAbortController = null;
 }
 
 function createWindow() {
@@ -707,7 +890,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('generate-guidance', async (_event, arg: { filePath: string; force?: boolean }) => {
     try {
-      if (guidanceBatchState?.status === 'running') {
+      if (guidanceBatchState?.status === 'running' || guidanceBatchState?.status === 'cancelling') {
         return { success: false, error: 'A digest batch is already running.' };
       }
       if (!currentRootPath || !isPathWithinRoot(arg.filePath, currentRootPath)) {
@@ -724,7 +907,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('start-guidance-batch', async (_event, arg: { folderPath?: string }) => {
-    if (guidanceBatchState?.status === 'running') {
+    if (guidanceBatchState?.status === 'running' || guidanceBatchState?.status === 'cancelling') {
       return { success: false, error: 'A digest batch is already running.', job: guidanceBatchState };
     }
     if (!currentRootPath) {
@@ -742,6 +925,7 @@ app.whenReady().then(async () => {
     }
 
     const jobId = crypto.randomUUID();
+    guidanceBatchAbortController = new AbortController();
     guidanceBatchState = {
       status: 'running',
       jobId,
@@ -754,10 +938,44 @@ app.whenReady().then(async () => {
       failed: 0,
       remaining: filePaths.length,
       errors: [],
-      currentFilePath: filePaths[0]
+      currentFilePath: filePaths[0],
+      phase: 'queued',
+      detail: `Preparing ${path.basename(filePaths[0])}`,
+      stopReason: null
     };
     emitGuidanceBatchProgress();
-    void runGuidanceBatch(jobId, scopePath, filePaths);
+    void runGuidanceBatch(jobId, scopePath, filePaths, guidanceBatchAbortController.signal).catch(error => {
+      console.error('Unexpected digest batch failure:', error);
+      if (guidanceBatchState?.jobId === jobId) {
+        guidanceBatchState = {
+          ...guidanceBatchState,
+          status: 'stopped',
+          currentFilePath: null,
+          phase: 'idle',
+          detail: 'Digest batch stopped unexpectedly',
+          stopReason: error instanceof Error ? error.message : String(error)
+        };
+        emitGuidanceBatchProgress();
+      }
+      guidanceBatchAbortController = null;
+    });
+    return { success: true, job: guidanceBatchState };
+  });
+
+  ipcMain.handle('cancel-guidance-batch', async () => {
+    if (!guidanceBatchState || (guidanceBatchState.status !== 'running' && guidanceBatchState.status !== 'cancelling')) {
+      return { success: false, error: 'No digest batch is running.', job: guidanceBatchState };
+    }
+    if (guidanceBatchState.status === 'running') {
+      guidanceBatchState = {
+        ...guidanceBatchState,
+        status: 'cancelling',
+        phase: 'cancelling',
+        detail: 'Cancelling the active PDF request…'
+      };
+      emitGuidanceBatchProgress();
+      guidanceBatchAbortController?.abort();
+    }
     return { success: true, job: guidanceBatchState };
   });
 

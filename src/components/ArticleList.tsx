@@ -28,6 +28,7 @@ interface ArticleListProps {
     onOpenPdf?: (filename: string) => void;
     onOpenGuidance?: (article: Article) => void;
     onGenerateMissingGuides?: () => void;
+    onCancelDigestBatch?: () => void;
     onToggleKey?: (articleId: number, isKey: boolean) => void;
     onToggleRead?: (articleId: number, isRead: boolean) => void;
     searchTerm: string;
@@ -52,6 +53,7 @@ export function ArticleList({
     onOpenPdf, 
     onOpenGuidance, 
     onGenerateMissingGuides,
+    onCancelDigestBatch,
     onToggleKey,
     onToggleRead,
     searchTerm,
@@ -68,6 +70,9 @@ export function ArticleList({
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [isRescanning, setIsRescanning] = useState(false);
   const [showAuthors, setShowAuthors] = useState(true);
+  const isBatchRunning = guidanceBatch?.status === 'running';
+  const isBatchCancelling = guidanceBatch?.status === 'cancelling';
+  const isBatchActive = isBatchRunning || isBatchCancelling;
 
   const handleSort = (field: 'title' | 'authors' | 'year' | 'isKey') => {
     if (sortField === field) {
@@ -124,13 +129,13 @@ export function ArticleList({
     <div className="flex-1 flex flex-col h-full bg-slate-800/30 backdrop-blur-sm">
         {/* Header */}
         <div className="border-b border-slate-700/50 px-6 py-4 bg-slate-900/30 drag-region space-y-3">
-            <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
+            <div className="flex items-start justify-between gap-6">
+                <div className="flex min-w-0 items-start gap-4">
                     {/* Sidebar Toggle */}
                     {onToggleSidebar && (
                         <button
                             onClick={onToggleSidebar}
-                            className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/50 transition-colors no-drag"
+                            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/50 transition-colors no-drag"
                             title={isSidebarOpen ? "Collapse Sidebar" : "Expand Sidebar"}
                         >
                             {isSidebarOpen ? (
@@ -141,16 +146,16 @@ export function ArticleList({
                         </button>
                     )}
 
-                    <div className="h-6 w-px bg-slate-700/50" />
+                    <div className="h-9 w-px shrink-0 bg-slate-700/50" />
 
-                    <div>
-                        <div className="flex items-center gap-2">
+                    <div className="min-w-0">
+                        <div className="flex h-9 items-center gap-2">
                             <h2 className="text-lg font-semibold text-slate-200">Articles</h2>
                             <button 
                                 onClick={handleRescanClick}
                                 disabled={isRescanning}
                                 className={cn(
-                                    "flex items-center gap-2 px-3 py-1 ml-2 rounded-md transition-colors no-drag border border-transparent",
+                                    "flex h-9 items-center gap-2 px-3 ml-2 rounded-lg transition-colors no-drag border border-transparent",
                                     isRescanning 
                                         ? "bg-blue-500/20 text-blue-300 border-blue-500/30" 
                                         : "bg-slate-700/50 text-slate-300 hover:bg-blue-600/20 hover:text-blue-200 hover:border-blue-500/30"
@@ -161,29 +166,32 @@ export function ArticleList({
                                <span className="text-xs font-medium">Rescan</span>
                             </button>
                             <button
-                                onClick={onGenerateMissingGuides}
-                                disabled={isGeneratingGuides}
+                                onClick={isBatchActive ? onCancelDigestBatch : onGenerateMissingGuides}
+                                disabled={(isGeneratingGuides && !isBatchActive) || isBatchCancelling}
                                 className={cn(
-                                    "flex items-center gap-2 px-3 py-1 rounded-md transition-colors no-drag border border-transparent",
-                                    isGeneratingGuides
-                                        ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                                    "flex h-9 items-center gap-2 px-3 rounded-lg transition-colors no-drag border",
+                                    isBatchActive
+                                        ? "bg-amber-500/15 text-amber-200 border-amber-500/40 hover:bg-amber-500/25 disabled:opacity-60"
                                         : "bg-slate-700/50 text-slate-300 hover:bg-emerald-600/20 hover:text-emerald-200 hover:border-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
                                 )}
-                                title="Create missing and refresh stale or failed digests; current digests are skipped"
+                                title={isBatchActive ? "Cancel the active request and stop this folder batch" : "Digest this folder; current digests are skipped"}
                             >
-                                <span className={isGeneratingGuides ? "animate-pulse" : ""}>📝</span>
+                                <span className={isBatchRunning ? "animate-pulse" : ""}>{isBatchActive ? '■' : '📝'}</span>
                                 <span className="text-xs font-medium">
-                                    {guidanceBatch?.status === 'running'
-                                        ? `Digest ${guidanceBatch.current}/${guidanceBatch.total}`
-                                        : 'Refresh Digests'}
+                                    {isBatchCancelling
+                                        ? 'Cancelling…'
+                                        : isBatchRunning
+                                          ? `Cancel ${guidanceBatch.current}/${guidanceBatch.total}`
+                                          : 'Digest Folder'}
                                 </span>
                             </button>
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <div className="flex min-h-5 min-w-0 items-center gap-2 text-xs text-slate-500">
                             <span>{articles.length} items</span>
-                            {guidanceBatch?.status === 'running' && (
-                                <span className="text-emerald-400">
+                            {isBatchActive && (
+                                <span className="min-w-0 truncate text-emerald-400" title={guidanceBatch.detail} aria-live="polite">
                                     · {guidanceBatch.created} created, {guidanceBatch.updated} updated, {guidanceBatch.skippedCurrent} current, {guidanceBatch.failed} failed, {guidanceBatch.remaining} remaining
+                                    {guidanceBatch.detail ? ` · ${guidanceBatch.detail}` : ''}
                                 </span>
                             )}
                             {guidanceBatch?.status === 'completed' && (
@@ -191,9 +199,17 @@ export function ArticleList({
                                     · Digest complete: {guidanceBatch.created} created, {guidanceBatch.updated} updated, {guidanceBatch.skippedCurrent} current, {guidanceBatch.failed} failed
                                 </span>
                             )}
+                            {guidanceBatch?.status === 'cancelled' && (
+                                <span className="text-amber-300">· Digest cancelled · {guidanceBatch.remaining} remaining</span>
+                            )}
+                            {guidanceBatch?.status === 'stopped' && (
+                                <span className="text-amber-300" title={guidanceBatch.stopReason || undefined}>
+                                    · Digest stopped · {guidanceBatch.failed} failed, {guidanceBatch.remaining} remaining
+                                </span>
+                            )}
                         </div>
                     </div>
-                    {guidanceBatch?.status === 'completed' && guidanceBatch.errors.length > 0 && (
+                    {!isBatchActive && guidanceBatch && guidanceBatch.errors.length > 0 && (
                         <details className="no-drag rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
                             <summary className="cursor-pointer font-semibold">
                                 View {guidanceBatch.errors.length} exact digest failure{guidanceBatch.errors.length === 1 ? '' : 's'}
@@ -209,13 +225,13 @@ export function ArticleList({
                     )}
                 </div>
                 
-                <div className="flex gap-2 no-drag">
+                <div className="flex h-9 shrink-0 items-center gap-2 no-drag">
                    {articles.length > 0 && (
                         <>
                         <button
                           onClick={() => setShowAuthors(!showAuthors)}
                           className={cn(
-                              "inline-flex items-center gap-2 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all shadow-lg shadow-black/20",
+                              "inline-flex h-9 items-center gap-2 px-3 border rounded-lg text-xs font-medium transition-all shadow-lg shadow-black/20",
                               showAuthors 
                                 ? "bg-slate-700 border-slate-600 text-white" 
                                 : "bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200"
@@ -227,13 +243,13 @@ export function ArticleList({
 
                         <button 
                           onClick={onExportBibtex}
-                          className="inline-flex items-center gap-2 px-3 py-1.5 bg-purple-900/30 border border-purple-700/50 rounded-lg text-xs font-medium text-purple-300 hover:text-white hover:bg-purple-800/40 transition-all shadow-lg shadow-black/20"
+                          className="inline-flex h-9 items-center gap-2 px-3 bg-purple-900/30 border border-purple-700/50 rounded-lg text-xs font-medium text-purple-300 hover:text-white hover:bg-purple-800/40 transition-all shadow-lg shadow-black/20"
                         >
                           📚 BibTeX
                         </button>
                         <button 
                           onClick={onExport}
-                          className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-all shadow-lg shadow-black/20"
+                          className="inline-flex h-9 items-center gap-2 px-3 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition-all shadow-lg shadow-black/20"
                         >
                           📥 ZIP
                         </button>

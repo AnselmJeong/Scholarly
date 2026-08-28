@@ -12,7 +12,7 @@ Scholarly should turn each source unit into one durable, independently searchabl
 - One book chapter becomes one chapter digest.
 - A whole book must not be summarized into a single digest unless it is explicitly treated as one source unit.
 
-The resulting Markdown files are intended to be useful both as readable seminar notes and as a knowledge-base source for plain-text search, FTS/BM25, and optional vector search. They must not depend on Obsidian links, concept pages, a master index, or any other generated knowledge graph.
+The resulting Markdown files have two equal purposes: let a researcher absorb the substantive content of a source quickly, and act as ScholarPen's searchable bridge back to the original PDF. ScholarPen should be able to retrieve a digest, resolve `source_relpath`, and use nearby physical-page locators to open or search the source PDF. The files must remain useful for plain-text search, FTS/BM25, and optional vector search without depending on Obsidian links, concept pages, a master index, or any other generated knowledge graph.
 
 The core design is a two-layer document:
 
@@ -54,6 +54,8 @@ schema_version: scholarly-digest/v1
 digest_id: sha256:8c51d7f8...
 unit_type: article
 source_relpath: articles/2024 - Author - Paper Title.pdf
+source_mime_type: application/pdf
+source_locator_scheme: pdf_physical_page_v1
 source_sha256: 17bd73ab...
 source_size_bytes: 2841932
 source_page_count: 18
@@ -75,7 +77,7 @@ keywords:
 generator_app: Scholarly
 generator_app_version: 0.8.0
 generator_model: qwen3.5:cloud
-prompt_version: scholarly-digest-v1
+prompt_version: scholarly-digest-v2
 extraction_version: pdf-pages-v1
 generated_at: "2026-08-28T12:00:00+09:00"
 body_sha256: 95af53a0...
@@ -112,31 +114,29 @@ Paper title · First Author · 2024 · Journal Name · EMPIRICAL.
 
 ...
 
-# 2. Motivation & the Gap
+# 2. Purpose & Scope
 
 ...
 
-# 3. Section-by-Section Walkthrough
+# 3. Section-by-Section Digest
 
-### Introduction
+**Introduction —**
 
-**What it introduces:** ...
+**Main content:** ... [Source: pp. 1–2]
 
-**Why here:** ...
+**Key evidence:** ... [Source: p. 2]
 
-**Hidden commitments:** ...
+**Connection:** ...
 
-**Bridge:** ...
-
-# 4. Where Readers Get Confused
+# 4. Key Findings & Details
 
 - ...
 
-# 5. Takeaway & Reframing
+# 5. Integrated Summary
 
 ...
 
-# 6. Coverage Check
+# 6. Coverage Map
 
 ...
 ```
@@ -153,6 +153,8 @@ Scholarly must serialize YAML with a real YAML serializer. It must not construct
 | `digest_id` | Stable SHA-256 identifier derived from source hash, unit type, and page range. |
 | `unit_type` | `article` or `book_chapter`. |
 | `source_relpath` | Path relative to the configured library root. |
+| `source_mime_type` | Exactly `application/pdf` for this pipeline. |
+| `source_locator_scheme` | Exactly `pdf_physical_page_v1`; locator pages refer to physical PDF pages, never printed journal pagination. |
 | `source_sha256` | SHA-256 of the original PDF bytes. Do not use MD5 for digest provenance. |
 | `source_size_bytes` | Original PDF size. |
 | `source_page_count` | Total PDF page count. |
@@ -235,19 +237,29 @@ The application must replace `{{OUTPUT_LANGUAGE}}` with `Korean` or `English` fo
 The source document must be supplied separately as page-marked, untrusted user content. It must not be concatenated into the system prompt.
 
 ```text
-You are an expert researcher and mentor in neuroscience and psychiatry, giving a
-~1-hour seminar to an intelligent PhD student who is NOT yet an expert in this
-exact subfield. Adopt one consistent voice: a calm, pedagogical mentor.
+You are an expert academic explainer in neuroscience and psychiatry. Create a
+faithful, content-dense digest for an intelligent PhD student who wants to absorb
+the supplied source as quickly as possible without losing its substantive detail.
+Adopt one consistent voice: calm, precise, and explanatory.
 
 ════════ GLOBAL RULES (obey for the entire output) ════════
 
 - Output language: {{OUTPUT_LANGUAGE}}.
 - Use the section headers below VERBATIM, in this exact order. Output nothing
   before the first header and nothing after the last section.
-- Prose-first. Use short connected paragraphs, not bullet-only lists. Bullets
-  are allowed only inside "Where Readers Get Confused" and the final checklist.
-- Length discipline: stay within the per-section word budgets given in brackets.
-  Treat budgets as targets (±20%), not suggestions. Do not pad; do not truncate.
+- Your primary job is content compression, not criticism. Reconstruct what the
+  source says, how it supports its claims, and how its sections fit together.
+- Do NOT infer hidden commitments, criticize the authors, introduce external
+  debates, or propose future work unless the source itself explicitly does so.
+  Report author-stated limitations faithfully as source content.
+- This Markdown will be indexed by ScholarPen. Preserve distinctive source
+  terminology, English technical terms, acronyms, instrument names, method names,
+  and named constructs alongside their explanations so Korean and English searches
+  can retrieve the digest.
+- Prose-first. Use short connected paragraphs. Bullets are allowed in
+  "Key Findings & Details" and "Coverage Map" when they improve scanability.
+- Treat length budgets as guidance. Prefer complete grounded coverage over exact
+  counts; do not pad or truncate to hit a number.
 - Math: render every formula in LaTeX ($…$ inline, $$…$$ block) and explain each
   symbol at an advanced-undergraduate level before interpreting the whole.
 - Cite the paper's own sections, pages, figures, and tables when referring to
@@ -255,15 +267,16 @@ exact subfield. Adopt one consistent voice: a calm, pedagogical mentor.
 
 ════════ SOURCE-TYPE BRANCH (decide once, then keep the same schema) ════════
 
-Classify the source as REVIEW, EMPIRICAL, or BOOK_CHAPTER.
+Use the verified REVIEW, EMPIRICAL, or BOOK_CHAPTER classification supplied by
+the application. Do not reclassify it.
 
-- If EMPIRICAL: in Part 2 explain the specific gap or question addressed by the
-  study. In Part 3 treat Methods and Results as their own major sections.
-- If REVIEW: explain why the author wrote the review and what synthesis or
-  correction the author believes is needed.
+- If EMPIRICAL: in Part 2 state the research question and scope. In Part 3 treat
+  Methods and Results as their own major sections and preserve important sample,
+  measure, analysis, and result details.
+- If REVIEW: state its purpose and scope, then preserve the major conceptual
+  distinctions, evidence, and conclusions organized by the authors.
 - If BOOK_CHAPTER: treat the supplied chapter, not the whole book, as the source
-  unit. Explain the chapter's pedagogical or argumentative role and do not invent
-  claims about chapters that were not supplied.
+  unit. Explain its scope and content using only supplied context.
 
 ════════ OUTPUT TEMPLATE (fill each header; keep headers verbatim) ════════
 
@@ -289,56 +302,59 @@ A compact term:definition list is permitted in this subsection only.
 
 ### 1.5 Intellectual lineage
 
-# 2. Motivation & the Gap
+# 2. Purpose & Scope
 
 [~200 words]
 
-Explain in plain but precise language (a) what problem or conceptual confusion
-motivated the author, and (b) what the author believes is missing or
-misunderstood in the existing literature. For a book chapter, explain the
-chapter's question and role in the book-level argument using only supplied
-context.
+State what the source sets out to explain, review, or test; what material it
+covers; and the organizing question or thesis. Describe the authors' stated
+purpose without evaluating whether it succeeds.
 
-# 3. Section-by-Section Walkthrough
+# 3. Section-by-Section Digest
 
-Cover the source's major sections IN ORDER. Cap at the 6 most important; if the
-source has more, merge minor ones. For EACH major section, use the following
-four paragraph labels and write ~250–400 words total:
+Cover the source's major sections IN THEIR ORIGINAL ORDER. Use up to 8 entries and
+merge only genuinely minor subsections. Preserve definitions, mechanisms, methods,
+results, examples, distinctions, qualifications, and author-stated limitations.
+For EACH entry, use these three labels and write enough to make that part
+understandable without reopening the PDF:
 
 **[Section name] —**
 
-**What it introduces:** Explain key concepts slowly and comprehensively; name
-the author's repeatedly cited arguments and assumptions.
+**Main content:** Faithfully explain the section's claims, concepts, and reasoning.
+Preserve the original section name and important searchable terms.
 
-**Why here:** Explain why these concepts appear at this point.
+**Key evidence:** Preserve important methods, data, examples, figures, tables, or
+cited evidence. For conceptual sections, preserve the definitions or distinctions
+doing the argumentative work.
 
-**Hidden commitments:** Identify implicit assumptions or theoretical commitments.
+**Connection:** Briefly describe how this content follows from the preceding
+section and what it establishes for the next section. Describe structure, not
+hidden motives. Include at least one physical PDF page locator in every entry.
 
-**Bridge:** Explain how this section sets up the next section.
+# 4. Key Findings & Details
 
-# 4. Where Readers Get Confused
+[~200–350 words; bullets allowed]
 
-[~200 words; bullets allowed]
+Collect the source's most important findings, mechanisms, definitions,
+quantitative results, comparisons, and author-stated limitations. Prioritize
+details a reader would want to remember or retrieve later. Do not add criticism
+or external interpretation.
 
-- Familiar-looking terms used in a special or non-standard way
-- Conceptual leaps the author leaves unexplained
-- Historical or theoretical background assumed rather than stated
-
-# 5. Takeaway & Reframing
+# 5. Integrated Summary
 
 [~220 words]
 
-Explain (a) the new perspective the author wants the reader to retain, (b) how
-the source reshapes the field or reframes an existing debate, and (c) what
-empirical or theoretical work it implicitly calls for next.
+Synthesize the complete source into a coherent account: the main thesis or
+research question, the reasoning or evidence chain, the principal findings, and
+the authors' conclusion. This is faithful compression, not a review of quality.
 
-# 6. Coverage Check
+# 6. Coverage Map
 
-[4–6 short lines; bullets allowed]
+[4–8 short lines; bullets allowed]
 
-Confirm that you (i) used every header verbatim, (ii) stayed within the requested
-budgets, (iii) rendered all formulas in LaTeX, and (iv) matched the source-type
-branch. List anything deliberately compressed and why.
+List the source sections covered by the digest and the physical PDF page ranges
+used for each. Note unreadable or deliberately compressed portions. This is a
+reader-facing map, not a self-evaluation.
 
 ════════ SOURCE-GROUNDING CONTRACT ════════
 
@@ -351,16 +367,23 @@ branch. List anything deliberately compressed and why.
 - Attach a source locator whenever discussing a specific argument, method,
   result, figure, or table. Prefer this form:
   [Source: §3.2, pp. 6–8, Fig. 2]
+- Page locators MUST use the physical page numbers supplied by the application's
+  `<page number="…">` markers. Never use printed journal pagination, citation page
+  numbers, line numbers, or reference numbers as PDF page locators.
 - Use only page, section, figure, and table identifiers present in the supplied
-  source. Never invent a locator.
+  source. Never invent a locator. If an exact section label cannot be verified,
+  cite only the physical PDF page.
+- Locators are machine-readable links from ScholarPen search results back to the
+  original PDF. Keep the exact `[Source: ...]` syntax and place locators close to
+  the claims they support.
 - If the source is incomplete, unreadable, or does not establish a requested
   point, say that it could not be confirmed from the supplied text.
 - Do not invent DOI, author, journal, year, sample size, statistical result,
   equation, section number, figure number, table number, or page number.
 - Do not output YAML frontmatter, JSON, XML, code fences, commentary, or content
   outside the required Markdown body.
-- Section 6 is a self-audit, not proof of validity. The application validator is
-  authoritative.
+- Section 6 is a reader-facing coverage map, not proof of validity. The
+  application validator remains authoritative.
 ```
 
 ## 6. Model message structure
@@ -424,24 +447,31 @@ Intermediate evidence notes must remain grounded in their page ranges. The final
 
 ## 9. Body validator
 
-The generated body must not be published merely because it is non-empty. Validate at least the following:
+The generated body must not be published merely because it is non-empty. Validation is tiered so that formatting preferences do not destroy otherwise useful grounded digests.
+
+Publication-blocking errors:
 
 1. Every required H1 header exists exactly once and in the required order.
-2. All five prerequisite H3 headers exist exactly once.
-3. Each major walkthrough section contains the four required labels.
-4. No unexpected top-level H1 exists.
-5. The body contains no YAML frontmatter or code fence.
-6. The selected source-type branch is one of the allowed enum values.
-7. Every cited page lies within the source unit's page range.
-8. Referenced section, figure, and table identifiers are present in the extracted source when the extractor can determine them.
-9. The response is not empty, abruptly truncated, or terminated mid-sentence.
-10. Math delimiters are balanced and formulas use the required LaTeX delimiters.
-11. Approximate section length targets are satisfied.
-12. The output language matches the requested language while the contract headers remain verbatim.
+2. At least one major source section exists in `Section-by-Section Digest`.
+3. No unexpected top-level H1 exists after harmless heading-level normalization.
+4. The body is non-empty and contains no embedded YAML or code-fence payload.
+5. The selected source-type branch is one of the allowed enum values.
+6. At least one source locator exists, and every cited physical page lies within the source unit's page range.
+7. The output language matches the requested language while the contract headers remain verbatim.
+
+Quality warnings that do not block publication:
+
+1. A prerequisite H3 or one of `Main content`, `Key evidence`, and `Connection` is missing or duplicated.
+2. An exact section, figure, or table label cannot be matched by the extractor.
+3. The response ends without terminal punctuation but otherwise contains all required sections.
+4. Math delimiters are imperfect.
+5. Approximate section length targets or Coverage Map line-count targets are missed.
+
+Before validation, the application may deterministically remove one outer Markdown code fence or LLM-generated YAML wrapper and normalize required heading levels. It must not invent missing source content or locators.
 
 English length validation may use word counts. Korean must use separately configured 어절 or character ranges; an English word-count threshold must not be applied unchanged to Korean prose.
 
-`# 6. Coverage Check` is useful for readers but must not be treated as proof that validation passed.
+`# 6. Coverage Map` is useful to readers and ScholarPen retrieval, but must not be treated as proof that validation passed.
 
 ## 10. Transactional publication
 
@@ -480,6 +510,11 @@ Rules:
 - A missing valid digest counts as `created` after successful publication.
 - A stale digest counts as `updated` only after successful replacement.
 - A failed update keeps the old digest and counts as `failed` and `remaining`.
+- Retry transient empty, timeout, 429, and 5xx responses with bounded exponential backoff.
+- On publication-blocking body errors, feed the exact errors back for one bounded regeneration attempt.
+- Permit the user to cancel the active request and stop the batch.
+- Stop automatically after three consecutive final failures so a broken provider or prompt cannot consume the whole folder unattended.
+- Pace consecutive PDFs briefly rather than issuing a new long request immediately.
 - Retry only failed or stale remaining items, not every item in the batch.
 - Report the exact validation failure for each failed source.
 
@@ -489,10 +524,15 @@ The digest format is deliberately compatible with a small, independent knowledge
 
 An indexer should:
 
-- Discover `resources/articles/**/*.md` and `resources/books/**/*.md` or configured Scholarly summary roots.
+- Scan valid `summary/**/*.md` digest files and parse YAML with a real YAML parser.
+- Resolve `source_relpath` against the ScholarPen project/library root; reject paths that escape that root.
+- Use `source_mime_type` and `source_locator_scheme` to select the PDF opener and physical-page navigation behavior.
+- Index title, authors, DOI, keywords, original section names, English technical terms, acronyms, and Markdown body text.
+- Keep nearby `[Source: ...]` locators with each indexed heading/chunk so a retrieved digest excerpt can lead back to the exact original PDF pages.
+- Discover configured Scholarly `summary/**/*.md` roots; do not assume the digest files have been copied into a separate ScholarPen resources directory.
 - Parse YAML as metadata, not searchable prose.
 - Chunk the body by Markdown heading while preserving parent headings.
-- Exclude `# 6. Coverage Check` from the searchable body.
+- Index `# 6. Coverage Map` as a compact source-navigation aid, but rank substantive sections above it.
 - Give each chunk a stable identifier derived from `digest_id`, heading path, ordinal, and chunk hash.
 - Return `source_relpath`, page range, and source locators with every retrieval result.
 - Support metadata filters such as year, author, journal, unit type, paper type, and keyword.
@@ -544,8 +584,12 @@ Implementation is complete only when these behaviors are covered:
 8. Two chapters from one PDF receive distinct stable IDs and files.
 9. Renaming or moving an unchanged PDF preserves its digest identity.
 10. Missing DOI or metadata remains `null` or explicitly fallback-sourced rather than hallucinated.
-11. Korean output preserves the English headers and passes Korean-specific length validation.
-12. Batch totals satisfy `created + updated + skipped_current + failed = total` at completion, and `remaining` equals the items still requiring successful publication.
+11. Korean output preserves English headers and important original-language technical terms; Korean-specific length targets produce warnings rather than destructive failures.
+12. A digest with complete grounded content but imperfect target lengths or optional labels is published with warnings.
+13. Empty/transient provider responses retry, validation failures receive one corrective regeneration, and cancellation aborts the active request.
+14. Three consecutive final failures stop the batch with unprocessed and failed items still counted as remaining.
+15. Batch totals satisfy `created + updated + skipped_current + failed = total` only when every item was attempted; after cancellation or automatic stop, `current` and `remaining` expose unattempted work.
+16. ScholarPen can resolve every valid `source_relpath` beneath the project root and interpret every page locator as a physical PDF page.
 
 ## 15. Non-goals for version 1
 
@@ -557,6 +601,6 @@ This contract does not require:
 - Cross-document synthesis reports
 - Milvus deployment
 - Automatic replacement of source PDFs
-- Treating the LLM's Coverage Check as authoritative validation
+- Treating the LLM's Coverage Map as authoritative validation
 
 The version 1 success criterion is simpler: every source unit has a trustworthy, provenance-preserving, searchable Markdown digest that can be regenerated safely and indexed by heading.

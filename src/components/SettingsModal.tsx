@@ -31,7 +31,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [guideModel, setGuideModel] = useState('nemotron-3-nano:30b-cloud');
   const [guidePrompt, setGuidePrompt] = useState('');
   const [outputLanguage, setOutputLanguage] = useState<'ko' | 'en'>('ko');
-  const [promptVersion, setPromptVersion] = useState('scholarly-digest-v1');
+  const [promptVersion, setPromptVersion] = useState('scholarly-digest-v2');
   const [ollamaApiKey, setOllamaApiKey] = useState('');
   const [hasOllamaApiKey, setHasOllamaApiKey] = useState(false);
   const [markdownTheme, setMarkdownTheme] = useState<MarkdownTheme>('lapis-dark');
@@ -56,7 +56,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
              setGuideModel(settings.ai.guideModel || 'nemotron-3-nano:30b-cloud');
              setGuidePrompt(settings.ai.guidePrompt || '');
              setOutputLanguage(settings.ai.outputLanguage === 'en' ? 'en' : 'ko');
-             setPromptVersion(settings.ai.promptVersion || 'scholarly-digest-v1');
+             setPromptVersion(settings.ai.promptVersion || 'scholarly-digest-v2');
              setHasOllamaApiKey(settings.ai.hasOllamaApiKey);
           }
           if (settings && settings.ui) {

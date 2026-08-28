@@ -93,6 +93,13 @@ function loadLegacyGuidePrompt(): string {
   return '';
 }
 
+function isLegacyCriticalReadingPrompt(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return normalized.includes('point out any implicit assumptions') ||
+    normalized.includes('suggest what kinds of empirical or theoretical work') ||
+    normalized.includes('where a reader commonly gets confused');
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   ai: {
     chatModel: 'mistral-large-3:675b-cloud',
@@ -131,7 +138,7 @@ export function loadSettings(): AppSettings {
         ai: {
           chatModel: readString(ai, 'chatModel', DEFAULT_SETTINGS.ai.chatModel),
           guideModel: readString(ai, 'guideModel', DEFAULT_SETTINGS.ai.guideModel),
-          guidePrompt: legacyGuidePrompt && storedGuidePrompt.trim() === legacyGuidePrompt.trim()
+          guidePrompt: (legacyGuidePrompt && storedGuidePrompt.trim() === legacyGuidePrompt.trim()) || isLegacyCriticalReadingPrompt(storedGuidePrompt)
             ? ''
             : storedGuidePrompt,
           outputLanguage: isOutputLanguage(ai.outputLanguage)

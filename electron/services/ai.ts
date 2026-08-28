@@ -62,6 +62,25 @@ function parseChatContent(payload: unknown): string | null {
     return typeof firstChoice.message.content === 'string' ? firstChoice.message.content : null;
 }
 
+function parseFinishReason(payload: unknown): string | null {
+    if (!isRecord(payload) || !Array.isArray(payload.choices)) return null;
+    const firstChoice: unknown = payload.choices[0];
+    return isRecord(firstChoice) && typeof firstChoice.finish_reason === 'string'
+        ? firstChoice.finish_reason
+        : null;
+}
+
+function parseUsage(payload: unknown): ChatCompletionUsage | null {
+    if (!isRecord(payload) || !isRecord(payload.usage)) return null;
+    const promptTokens = payload.usage.prompt_tokens;
+    const completionTokens = payload.usage.completion_tokens;
+    const totalTokens = payload.usage.total_tokens;
+    if (typeof promptTokens !== 'number' || typeof completionTokens !== 'number' || typeof totalTokens !== 'number') {
+        return null;
+    }
+    return { promptTokens, completionTokens, totalTokens };
+}
+
 async function getResponseError(response: Response): Promise<string> {
     try {
         const payload: unknown = await response.json();
@@ -112,36 +131,150 @@ export interface ChatMessage {
     content: string;
 }
 
-interface ChatRequestOptions {
+export interface ChatRequestOptions {
     maxTokens?: number;
     temperature?: number;
+    signal?: AbortSignal;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    onRetry?: (event: { attempt: number; delayMs: number; reason: string }) => void;
 }
 
-async function requestChat(
+export interface ChatCompletionUsage {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+}
+
+export interface ChatCompletionResult {
+    content: string;
+    finishReason: string | null;
+    usage: ChatCompletionUsage | null;
+    requestAttempts: number;
+}
+
+const REQUEST_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_REQUEST_ATTEMPTS = 3;
+
+class NonRetryableChatError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'NonRetryableChatError';
+    }
+}
+
+export function isRetryableChatStatus(status: number): boolean {
+    return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+export function chatRetryDelayMs(completedAttempt: number): number {
+    return Math.min(8_000, 1_000 * 2 ** Math.max(0, completedAttempt - 1));
+}
+
+function abortError(): Error {
+    const error = new Error('Digest generation cancelled.');
+    error.name = 'AbortError';
+    return error;
+}
+
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(abortError());
+            return;
+        }
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(abortError());
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, delayMs);
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, externalSignal?: AbortSignal): Promise<Response> {
+    if (externalSignal?.aborted) throw abortError();
+    const controller = new AbortController();
+    let timedOut = false;
+    const forwardAbort = () => controller.abort();
+    externalSignal?.addEventListener('abort', forwardAbort, { once: true });
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, REQUEST_TIMEOUT_MS);
+    try {
+        return await fetch(url, { ...init, signal: controller.signal });
+    } catch (error) {
+        if (externalSignal?.aborted) throw abortError();
+        if (timedOut) throw new Error(`Ollama Cloud request timed out after ${REQUEST_TIMEOUT_MS / 60_000} minutes.`);
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+        externalSignal?.removeEventListener('abort', forwardAbort);
+    }
+}
+
+export async function requestChat(
     messages: ChatMessage[],
     model: string,
     options: ChatRequestOptions = {}
-): Promise<string> {
-    const response = await fetch(`${OLLAMA_BASE_URL}/chat/completions`, {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            model,
-            messages,
-            stream: false,
-            temperature: options.temperature ?? 0.3,
-            ...(options.maxTokens ? { max_tokens: options.maxTokens } : {})
-        })
-    });
+): Promise<ChatCompletionResult> {
+    const maximumAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_REQUEST_ATTEMPTS);
+    let lastError: unknown = null;
 
-    if (!response.ok) {
-        throw new Error(`Ollama Cloud chat failed: ${await getResponseError(response)}`);
+    for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+        if (options.signal?.aborted) throw abortError();
+        try {
+            const response = await fetchWithTimeout(`${OLLAMA_BASE_URL}/chat/completions`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    model,
+                    messages,
+                    stream: false,
+                    temperature: options.temperature ?? 0.3,
+                    ...(options.maxTokens ? { max_tokens: options.maxTokens } : {})
+                })
+            }, options.signal);
+
+            if (!response.ok) {
+                const message = `Ollama Cloud chat failed: ${await getResponseError(response)}`;
+                if (!isRetryableChatStatus(response.status) || attempt === maximumAttempts) {
+                    if (!isRetryableChatStatus(response.status)) throw new NonRetryableChatError(message);
+                    throw new Error(message);
+                }
+                lastError = new Error(message);
+            } else {
+                const data: unknown = await response.json();
+                const content = parseChatContent(data);
+                if (content?.trim()) {
+                    return {
+                        content: content.trim(),
+                        finishReason: parseFinishReason(data),
+                        usage: parseUsage(data),
+                        requestAttempts: attempt
+                    };
+                }
+                lastError = new Error('Ollama Cloud returned an empty response.');
+                if (attempt === maximumAttempts) throw lastError;
+            }
+        } catch (error) {
+            if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw abortError();
+            if (error instanceof NonRetryableChatError) throw error;
+            lastError = error;
+            if (attempt === maximumAttempts) throw error;
+        }
+
+        const delayMs = options.retryDelayMs ?? chatRetryDelayMs(attempt);
+        const reason = lastError instanceof Error ? lastError.message : String(lastError);
+        options.onRetry?.({ attempt, delayMs, reason });
+        await waitForRetry(delayMs, options.signal);
     }
 
-    const data: unknown = await response.json();
-    const content = parseChatContent(data);
-    if (!content?.trim()) throw new Error('Ollama Cloud returned an empty response.');
-    return content;
+    throw lastError instanceof Error ? lastError : new Error('Ollama Cloud request failed.');
 }
 
 export async function chatWithPaper(
@@ -174,7 +307,7 @@ export async function chatWithPaper(
 
     try {
         console.log(`Sending chat request to Ollama (${chatModel})...`);
-        return await requestChat(fullMessages, chatModel);
+        return (await requestChat(fullMessages, chatModel)).content;
     } catch (error) {
         console.error("Error in chatWithPaper:", error);
         throw error;
@@ -189,6 +322,14 @@ export interface GuidanceGenerationInput {
     document: ExtractedDocument;
     sourceUnit: DigestSourceUnit;
     additionalGuidance?: string;
+    validationFeedback?: string[];
+}
+
+export type DigestGenerationPhase = 'generating' | 'extracting_evidence' | 'merging_evidence' | 'retrying_request';
+
+export interface GuidanceGenerationOptions {
+    signal?: AbortSignal;
+    onProgress?: (phase: DigestGenerationPhase, detail: string) => void;
 }
 
 function pageMarkedLength(pages: ExtractedPage[]): number {
@@ -229,6 +370,9 @@ export function buildDirectDigestMessages(
     const preferences = input.additionalGuidance?.trim()
         ? `\n\n<pedagogical_preferences>\n${escapeUntrustedText(input.additionalGuidance.trim())}\n</pedagogical_preferences>`
         : '';
+    const correction = input.validationFeedback?.length
+        ? `\n\n<previous_validation_errors>\n${escapeUntrustedText(input.validationFeedback.join('\n'))}\n</previous_validation_errors>\nA previous draft failed these checks. Produce a fresh, complete body that fixes them. Do not discuss the errors.`
+        : '';
     return [
         {
             role: 'system',
@@ -236,7 +380,7 @@ export function buildDirectDigestMessages(
         },
         {
             role: 'user',
-            content: `<verified_metadata>\n${escapeUntrustedText(formatVerifiedMetadata(input.sourceUnit))}\n</verified_metadata>${preferences}\n\n<source_document>\n${formatPageMarkedSource(input.document.pages)}\n</source_document>`
+            content: `<verified_metadata>\n${escapeUntrustedText(formatVerifiedMetadata(input.sourceUnit))}\n</verified_metadata>${preferences}${correction}\n\n<source_document>\n${formatPageMarkedSource(input.document.pages)}\n</source_document>`
         }
     ];
 }
@@ -252,7 +396,8 @@ async function extractEvidenceNotes(
     pages: ExtractedPage[],
     sourceUnit: DigestSourceUnit,
     chunkIndex: number,
-    chunkCount: number
+    chunkCount: number,
+    options: GuidanceGenerationOptions
 ): Promise<string> {
     const messages: ChatMessage[] = [
         { role: 'system', content: EVIDENCE_SYSTEM_PROMPT },
@@ -261,10 +406,20 @@ async function extractEvidenceNotes(
             content: `<verified_metadata>\n${escapeUntrustedText(formatVerifiedMetadata(sourceUnit))}\n</verified_metadata>\n\n<chunk index="${chunkIndex}" total="${chunkCount}">\n${formatPageMarkedSource(pages)}\n</chunk>`
         }
     ];
-    return requestChat(messages, guideModel, { temperature: 0.1, maxTokens: 3_000 });
+    return (await requestChat(messages, guideModel, {
+        temperature: 0.1,
+        maxTokens: 3_000,
+        signal: options.signal,
+        onRetry: event => options.onProgress?.('retrying_request', `Evidence request retry ${event.attempt + 1}: ${event.reason}`)
+    })).content;
 }
 
-async function mergeEvidenceGroup(notes: string[], round: number, groupIndex: number): Promise<string> {
+async function mergeEvidenceGroup(
+    notes: string[],
+    round: number,
+    groupIndex: number,
+    options: GuidanceGenerationOptions
+): Promise<string> {
     const messages: ChatMessage[] = [
         {
             role: 'system',
@@ -275,10 +430,15 @@ async function mergeEvidenceGroup(notes: string[], round: number, groupIndex: nu
             content: notes.map((note, index) => `<evidence_note group="${groupIndex}" index="${index + 1}">\n${escapeUntrustedText(note)}\n</evidence_note>`).join('\n\n')
         }
     ];
-    return requestChat(messages, guideModel, { temperature: 0.1, maxTokens: 6_000 });
+    return (await requestChat(messages, guideModel, {
+        temperature: 0.1,
+        maxTokens: 6_000,
+        signal: options.signal,
+        onRetry: event => options.onProgress?.('retrying_request', `Evidence merge retry ${event.attempt + 1}: ${event.reason}`)
+    })).content;
 }
 
-async function reduceEvidenceNotes(initialNotes: string[]): Promise<string[]> {
+async function reduceEvidenceNotes(initialNotes: string[], options: GuidanceGenerationOptions): Promise<string[]> {
     let notes = initialNotes;
     let round = 1;
     while (notes.join('\n\n').length > EVIDENCE_MERGE_CHARACTER_LIMIT && notes.length > 1) {
@@ -297,23 +457,31 @@ async function reduceEvidenceNotes(initialNotes: string[]): Promise<string[]> {
         if (current.length > 0) groups.push(current);
         notes = [];
         for (let index = 0; index < groups.length; index += 1) {
-            notes.push(await mergeEvidenceGroup(groups[index], round, index + 1));
+            options.onProgress?.('merging_evidence', `Merging evidence group ${index + 1}/${groups.length}`);
+            notes.push(await mergeEvidenceGroup(groups[index], round, index + 1, options));
         }
         round += 1;
     }
     return notes;
 }
 
-async function generateFromEvidence(input: GuidanceGenerationInput): Promise<string> {
+async function generateFromEvidence(
+    input: GuidanceGenerationInput,
+    options: GuidanceGenerationOptions
+): Promise<ChatCompletionResult> {
     const chunks = chunkExtractedPages(input.document.pages);
     const notes: string[] = [];
     for (let index = 0; index < chunks.length; index += 1) {
         console.log(`Extracting digest evidence chunk ${index + 1}/${chunks.length} with model: ${guideModel}`);
-        notes.push(await extractEvidenceNotes(chunks[index], input.sourceUnit, index + 1, chunks.length));
+        options.onProgress?.('extracting_evidence', `Extracting evidence ${index + 1}/${chunks.length}`);
+        notes.push(await extractEvidenceNotes(chunks[index], input.sourceUnit, index + 1, chunks.length, options));
     }
-    const reducedNotes = await reduceEvidenceNotes(notes);
+    const reducedNotes = await reduceEvidenceNotes(notes, options);
     const preferences = input.additionalGuidance?.trim()
         ? `\n\n<pedagogical_preferences>\n${escapeUntrustedText(input.additionalGuidance.trim())}\n</pedagogical_preferences>`
+        : '';
+    const correction = input.validationFeedback?.length
+        ? `\n\n<previous_validation_errors>\n${escapeUntrustedText(input.validationFeedback.join('\n'))}\n</previous_validation_errors>\nA previous draft failed these checks. Produce a fresh, complete body that fixes them. Do not discuss the errors.`
         : '';
     const messages: ChatMessage[] = [
         {
@@ -322,16 +490,31 @@ async function generateFromEvidence(input: GuidanceGenerationInput): Promise<str
         },
         {
             role: 'user',
-            content: `<verified_metadata>\n${escapeUntrustedText(formatVerifiedMetadata(input.sourceUnit))}\n</verified_metadata>${preferences}\n\n<evidence_map>\n${escapeUntrustedText(reducedNotes.join('\n\n'))}\n</evidence_map>\n\nThe evidence map covers the complete source unit through page-bounded extraction. Write the final digest from this evidence only.`
+            content: `<verified_metadata>\n${escapeUntrustedText(formatVerifiedMetadata(input.sourceUnit))}\n</verified_metadata>${preferences}${correction}\n\n<evidence_map>\n${escapeUntrustedText(reducedNotes.join('\n\n'))}\n</evidence_map>\n\nThe evidence map covers the complete source unit through page-bounded extraction. Write the final digest from this evidence only.`
         }
     ];
-    return requestChat(messages, guideModel, { temperature: 0.2, maxTokens: 16_000 });
+    options.onProgress?.('generating', 'Writing final digest');
+    return requestChat(messages, guideModel, {
+        temperature: 0.2,
+        maxTokens: 16_000,
+        signal: options.signal,
+        onRetry: event => options.onProgress?.('retrying_request', `Final digest retry ${event.attempt + 1}: ${event.reason}`)
+    });
 }
 
-export async function generateGuidance(input: GuidanceGenerationInput): Promise<string> {
+export async function generateGuidance(
+    input: GuidanceGenerationInput,
+    options: GuidanceGenerationOptions = {}
+): Promise<ChatCompletionResult> {
     console.log(`Generating digest with model: ${guideModel}`);
     if (pageMarkedLength(input.document.pages) <= DIRECT_SOURCE_CHARACTER_LIMIT) {
-        return requestChat(buildDirectDigestMessages(input), guideModel, { temperature: 0.2, maxTokens: 16_000 });
+        options.onProgress?.('generating', 'Writing digest from page-marked source');
+        return requestChat(buildDirectDigestMessages(input), guideModel, {
+            temperature: 0.2,
+            maxTokens: 16_000,
+            signal: options.signal,
+            onRetry: event => options.onProgress?.('retrying_request', `Digest request retry ${event.attempt + 1}: ${event.reason}`)
+        });
     }
-    return generateFromEvidence(input);
+    return generateFromEvidence(input, options);
 }

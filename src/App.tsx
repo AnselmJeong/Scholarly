@@ -70,10 +70,11 @@ function App() {
   // App Loading State
   const [isLoading, setIsLoading] = useState(true);
 
-  const isGeneratingGuides = guidanceBatch?.status === 'running' || singleGuidePaths.length > 0;
+  const isBatchActive = guidanceBatch?.status === 'running' || guidanceBatch?.status === 'cancelling';
+  const isGeneratingGuides = isBatchActive || singleGuidePaths.length > 0;
   const guideGenerationInProgressPaths = Array.from(new Set([
     ...singleGuidePaths,
-    ...(guidanceBatch?.status === 'running' ? [guidanceBatch.currentFilePath] : [])
+    ...(isBatchActive && guidanceBatch.currentFilePath ? [guidanceBatch.currentFilePath] : [])
   ]));
 
   const fetchData = useCallback(async () => {
@@ -405,6 +406,17 @@ function App() {
     }
   };
 
+  const handleCancelGuidanceBatch = async () => {
+    try {
+      const result = await window.ipcRenderer.invoke('cancel-guidance-batch');
+      if (result?.job) setGuidanceBatch(result.job);
+      if (!result?.success && result?.error) alert(result.error);
+    } catch (error) {
+      console.error('Error cancelling digest batch:', error);
+      alert('Failed to cancel the digest batch.');
+    }
+  };
+
   const handleDeleteArticle = async () => {
     if (!selectedArticleId) return;
     if (confirm("Are you sure you want to remove this article from the database? (File will not be deleted)")) {
@@ -501,6 +513,7 @@ function App() {
                  onOpenPdf={(filename) => handleOpenPdf(filename)}
                  onOpenGuidance={handleOpenGuidance}
                  onGenerateMissingGuides={handleGenerateMissingGuides}
+                 onCancelDigestBatch={handleCancelGuidanceBatch}
                  onToggleKey={handleToggleKey}
                   onToggleRead={handleToggleRead}
                  searchTerm={filenameFilter}
