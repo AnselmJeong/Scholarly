@@ -6,6 +6,7 @@ import { SettingsModal } from '@/components/SettingsModal'
 import { ScanProgress } from '@/components/ScanProgress'
 import { ResizablePanels } from '@/components/ResizablePanels'
 import { GuidanceViewer } from '@/components/GuidanceViewer'
+import type { DigestStatus, GuidanceBatchState, StartGuidanceBatchResult } from '@/types/guidance'
 
 // Types
 interface Article {
@@ -20,6 +21,7 @@ interface Article {
     filePath: string;
     addedDate: string | Date | null;
     hasGuidance?: boolean;
+    guidanceStatus?: DigestStatus;
     isKey?: number | boolean;
     isRead?: number | boolean;
 }
@@ -45,6 +47,8 @@ function App() {
   const [selectedArticleId, setSelectedArticleId] = useState<number | null>(null);
   const [selectedKeywordIds, setSelectedKeywordIds] = useState<number[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [singleGuidePaths, setSingleGuidePaths] = useState<string[]>([]);
+  const [guidanceBatch, setGuidanceBatch] = useState<GuidanceBatchState | null>(null);
   const [rootPath, setRootPath] = useState<string | null>(null);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [articleKeywords, setArticleKeywords] = useState<string[]>([]);
@@ -65,6 +69,12 @@ function App() {
   
   // App Loading State
   const [isLoading, setIsLoading] = useState(true);
+
+  const isGeneratingGuides = guidanceBatch?.status === 'running' || singleGuidePaths.length > 0;
+  const guideGenerationInProgressPaths = Array.from(new Set([
+    ...singleGuidePaths,
+    ...(guidanceBatch?.status === 'running' ? [guidanceBatch.currentFilePath] : [])
+  ]));
 
   const fetchData = useCallback(async () => {
       try {
@@ -92,7 +102,7 @@ function App() {
     try {
       const status = await window.ipcRenderer.invoke('check-ollama');
       setOllamaStatus(status);
-    } catch (e) {
+    } catch {
       setOllamaStatus(false);
     }
   }, []);
@@ -118,6 +128,21 @@ function App() {
       // Cleanup listeners if needed
     };
   }, [fetchData, checkOllama]);
+
+  useEffect(() => {
+    const handleGuidanceBatchProgress = (_event: unknown, progress: GuidanceBatchState) => {
+      setGuidanceBatch(progress);
+    };
+
+    window.ipcRenderer.on('guidance-batch-progress', handleGuidanceBatchProgress);
+    window.ipcRenderer.invoke<GuidanceBatchState | null>('get-guidance-batch-status')
+      .then(setGuidanceBatch)
+      .catch((error: unknown) => console.error('Failed to restore digest batch status:', error));
+
+    return () => {
+      window.ipcRenderer.off('guidance-batch-progress', handleGuidanceBatchProgress);
+    };
+  }, []);
 
   // Fetch keywords for specific selected article detail view
   useEffect(() => {
@@ -323,7 +348,29 @@ function App() {
 
   const handleOpenGuidance = async (article: Article) => {
       try {
-          const result = await window.ipcRenderer.invoke('read-guidance', article.filePath);
+          let result = await window.ipcRenderer.invoke('read-guidance', article.filePath);
+          const previousContent = result.success ? result.content : null;
+          if (!result.success || result.status !== 'current') {
+              setSingleGuidePaths(prev => prev.includes(article.filePath) ? prev : [...prev, article.filePath]);
+              try {
+                const generateResult = await window.ipcRenderer.invoke('generate-guidance', { filePath: article.filePath });
+                if (!generateResult.success) {
+                    alert("Failed to generate a current digest: " + (generateResult.error || 'Unknown error'));
+                    if (previousContent) {
+                      setGuidanceContent(previousContent);
+                      setGuidanceTitle(`${article.title || article.filename} (previous digest)`);
+                      setCenterTab('guidance');
+                    }
+                    return;
+                }
+
+                await fetchData();
+                result = await window.ipcRenderer.invoke('read-guidance', article.filePath);
+              } finally {
+                setSingleGuidePaths(prev => prev.filter(fp => fp !== article.filePath));
+              }
+          }
+
           if (result.success) {
               setGuidanceContent(result.content);
               setGuidanceTitle(article.title || article.filename);
@@ -332,8 +379,30 @@ function App() {
               alert("Failed to load guidance: " + result.error);
           }
       } catch (e) {
+          setSingleGuidePaths(prev => prev.filter(fp => fp !== article.filePath));
           console.error("Error opening guidance:", e);
       }
+  };
+
+  const handleGenerateMissingGuides = async () => {
+    const folderPath = selectedFolderPath || rootPath;
+    if (!folderPath) {
+      alert('Select a root folder first.');
+      return;
+    }
+
+    try {
+      const result = await window.ipcRenderer.invoke<StartGuidanceBatchResult>('start-guidance-batch', { folderPath });
+      if (!result.success) {
+        if (result.job) setGuidanceBatch(result.job);
+        alert(result.error);
+        return;
+      }
+      setGuidanceBatch(result.job);
+    } catch (e) {
+      console.error("Error starting digest batch:", e);
+      alert('Failed to start digest generation.');
+    }
   };
 
   const handleDeleteArticle = async () => {
@@ -403,7 +472,7 @@ function App() {
        
        {ollamaStatus === false && (
          <div className="absolute top-4 right-4 z-50 px-4 py-2 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-xs font-medium backdrop-blur-md animate-in slide-in-from-top-4 duration-300">
-           ⚠️ Ollama not running
+           ⚠️ Ollama Cloud unavailable — check Settings
          </div>
        )}
 
@@ -431,6 +500,7 @@ function App() {
                  onExportBibtex={handleExportBibtex}
                  onOpenPdf={(filename) => handleOpenPdf(filename)}
                  onOpenGuidance={handleOpenGuidance}
+                 onGenerateMissingGuides={handleGenerateMissingGuides}
                  onToggleKey={handleToggleKey}
                   onToggleRead={handleToggleRead}
                  searchTerm={filenameFilter}
@@ -439,6 +509,9 @@ function App() {
                  onSelectFolder={handleSelectRoot}
                  isSidebarOpen={isSidebarOpen}
                  onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                 isGeneratingGuides={isGeneratingGuides}
+                 guideGenerationInProgressPaths={guideGenerationInProgressPaths}
+                 guidanceBatch={guidanceBatch}
                />
            ) : (
                <GuidanceViewer
@@ -475,6 +548,7 @@ function App() {
          isOpen={isSettingsOpen}
          onClose={() => {
            setIsSettingsOpen(false);
+           checkOllama();
            // Reload settings to apply theme change
            window.ipcRenderer.invoke('get-settings').then((settings: { ui?: { markdownTheme?: MarkdownTheme } }) => {
              if (settings?.ui?.markdownTheme) {

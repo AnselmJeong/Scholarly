@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import type { DigestStatus, GuidanceBatchState } from '@/types/guidance';
 
 interface Article {
     id: number;
@@ -7,13 +8,14 @@ interface Article {
     authors: string | null;
     year: number | null;
     addedDate: string | Date | null;
-    journal?: string | null;
-    doi?: string | null;
+    journal: string | null;
+    doi: string | null;
     hasGuidance?: boolean;
+    guidanceStatus?: DigestStatus;
     isKey?: number | boolean;
     isRead?: number | boolean;
-    abstract?: string | null;
-    filePath?: string;
+    abstract: string | null;
+    filePath: string;
 }
 
 
@@ -24,7 +26,8 @@ interface ArticleListProps {
     onExportBibtex: () => void;
     selectedId: number | null;
     onOpenPdf?: (filename: string) => void;
-    onOpenGuidance?: (article: any) => void;
+    onOpenGuidance?: (article: Article) => void;
+    onGenerateMissingGuides?: () => void;
     onToggleKey?: (articleId: number, isKey: boolean) => void;
     onToggleRead?: (articleId: number, isRead: boolean) => void;
     searchTerm: string;
@@ -33,6 +36,9 @@ interface ArticleListProps {
     onSelectFolder?: () => void;
     isSidebarOpen?: boolean;
     onToggleSidebar?: () => void;
+    isGeneratingGuides?: boolean;
+    guideGenerationInProgressPaths?: string[];
+    guidanceBatch?: GuidanceBatchState | null;
 }
 
 import { useState, useMemo } from 'react';
@@ -45,6 +51,7 @@ export function ArticleList({
     selectedId, 
     onOpenPdf, 
     onOpenGuidance, 
+    onGenerateMissingGuides,
     onToggleKey,
     onToggleRead,
     searchTerm,
@@ -52,7 +59,10 @@ export function ArticleList({
     onRescan,
     onSelectFolder,
     isSidebarOpen = true,
-    onToggleSidebar
+    onToggleSidebar,
+    isGeneratingGuides = false,
+    guideGenerationInProgressPaths = [],
+    guidanceBatch = null
 }: ArticleListProps) {
   const [sortField, setSortField] = useState<'title' | 'authors' | 'year' | 'isKey'>('year');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
@@ -150,9 +160,53 @@ export function ArticleList({
                                <span className={isRescanning ? "animate-spin" : ""}>🔄</span>
                                <span className="text-xs font-medium">Rescan</span>
                             </button>
+                            <button
+                                onClick={onGenerateMissingGuides}
+                                disabled={isGeneratingGuides}
+                                className={cn(
+                                    "flex items-center gap-2 px-3 py-1 rounded-md transition-colors no-drag border border-transparent",
+                                    isGeneratingGuides
+                                        ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                                        : "bg-slate-700/50 text-slate-300 hover:bg-emerald-600/20 hover:text-emerald-200 hover:border-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
+                                )}
+                                title="Create missing and refresh stale or failed digests; current digests are skipped"
+                            >
+                                <span className={isGeneratingGuides ? "animate-pulse" : ""}>📝</span>
+                                <span className="text-xs font-medium">
+                                    {guidanceBatch?.status === 'running'
+                                        ? `Digest ${guidanceBatch.current}/${guidanceBatch.total}`
+                                        : 'Refresh Digests'}
+                                </span>
+                            </button>
                         </div>
-                        <span className="text-xs text-slate-500">{articles.length} items</span>
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                            <span>{articles.length} items</span>
+                            {guidanceBatch?.status === 'running' && (
+                                <span className="text-emerald-400">
+                                    · {guidanceBatch.created} created, {guidanceBatch.updated} updated, {guidanceBatch.skippedCurrent} current, {guidanceBatch.failed} failed, {guidanceBatch.remaining} remaining
+                                </span>
+                            )}
+                            {guidanceBatch?.status === 'completed' && (
+                                <span className={guidanceBatch.failed > 0 ? 'text-amber-400' : 'text-emerald-400'}>
+                                    · Digest complete: {guidanceBatch.created} created, {guidanceBatch.updated} updated, {guidanceBatch.skippedCurrent} current, {guidanceBatch.failed} failed
+                                </span>
+                            )}
+                        </div>
                     </div>
+                    {guidanceBatch?.status === 'completed' && guidanceBatch.errors.length > 0 && (
+                        <details className="no-drag rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+                            <summary className="cursor-pointer font-semibold">
+                                View {guidanceBatch.errors.length} exact digest failure{guidanceBatch.errors.length === 1 ? '' : 's'}
+                            </summary>
+                            <ul className="mt-2 max-h-32 space-y-2 overflow-y-auto pl-4">
+                                {guidanceBatch.errors.map(failure => (
+                                    <li key={failure.filePath} className="list-disc break-words">
+                                        <span className="font-medium">{failure.filePath.split(/[/\\]/).pop()}</span>: {failure.error}
+                                    </li>
+                                ))}
+                            </ul>
+                        </details>
+                    )}
                 </div>
                 
                 <div className="flex gap-2 no-drag">
@@ -252,6 +306,26 @@ export function ArticleList({
             {/* List Items */}
             <div className="divide-y divide-slate-700/30">
                 {sortedArticles.map(article => (
+                    (() => {
+                      const isGuideGenerating = guideGenerationInProgressPaths.includes(article.filePath);
+                      const status = article.guidanceStatus ?? (article.hasGuidance ? 'stale' : 'missing');
+                      const isGuideQueued = guidanceBatch?.status === 'running' && status !== 'current' && !isGuideGenerating;
+                      const statusStyle = status === 'current'
+                        ? 'text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300'
+                        : status === 'stale'
+                          ? 'text-amber-300 bg-amber-900/20 border border-amber-700/50 hover:bg-amber-800/30'
+                          : status === 'failed'
+                            ? 'text-red-300 bg-red-900/20 border border-red-700/50 hover:bg-red-800/30'
+                            : 'text-slate-500 bg-slate-800/70 border border-slate-700 hover:bg-amber-900/20 hover:border-amber-700/50 hover:text-amber-300';
+                      const statusLabel = status === 'current'
+                        ? 'Open current digest'
+                        : status === 'stale'
+                          ? 'Digest is stale — regenerate'
+                          : status === 'failed'
+                            ? 'Last generation failed — retry'
+                            : 'Generate digest';
+                      const statusIcon = status === 'current' ? '📄' : status === 'stale' ? '↻' : status === 'failed' ? '!' : '✍';
+                      return (
                     <div 
                         key={article.id}
                         onClick={() => onSelect(article.id)}
@@ -321,20 +395,32 @@ export function ArticleList({
                             </span>
                         </div>
                         <div className="w-16 px-4 py-2 text-center flex-shrink-0 flex justify-center">
-                            {article.hasGuidance && (
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        onOpenGuidance && onOpenGuidance(article);
-                                    }}
-                                    className="p-1.5 rounded-md text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
-                                    title="Open Guidance"
-                                >
-                                    📄
-                                </button>
-                            )}
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onSelect(article.id);
+                                    if (isGuideGenerating || isGuideQueued) return;
+                                    onOpenGuidance && onOpenGuidance(article);
+                                }}
+                                className={cn(
+                                    "p-1.5 rounded-md transition-colors",
+                                    isGuideGenerating
+                                        ? "text-amber-300 bg-amber-900/20 border border-amber-700/50"
+                                        : isGuideQueued
+                                        ? "text-slate-500 bg-slate-800/70 border border-slate-700 cursor-wait"
+                                        :
+                                    statusStyle
+                                )}
+                                title={isGuideGenerating ? "Generating digest..." : (isGuideQueued ? "Queued for digest generation" : statusLabel)}
+                            >
+                                {isGuideGenerating ? (
+                                  <span className="inline-block w-3.5 h-3.5 border-2 border-amber-300/80 border-t-transparent rounded-full animate-spin" />
+                                ) : (isGuideQueued ? '…' : statusIcon)}
+                            </button>
                         </div>
                     </div>
+                      );
+                    })()
                 ))}
             </div>
             

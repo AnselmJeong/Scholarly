@@ -3,8 +3,9 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
-import { checkOllamaStatus, listModels, setModel, chatWithPaper, setChatModel } from './services/ai'
-import { loadSettings, saveSettings, AppSettings } from './store'
+import { checkOllamaStatus, listModels, setModel, chatWithPaper, setChatModel, setGuideModel, setOllamaApiKey, generateGuidance } from './services/ai'
+import { loadSettings, saveSettings, getDefaultGuidePrompt } from './store'
+import type { AppSettings, SettingsUpdate } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
 import { generateBibtexForArticles } from './services/bibtex'
 import { fetchPaperMetadata } from './services/openalex'
@@ -12,7 +13,21 @@ import { eq, and, sql, asc, desc } from 'drizzle-orm'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import archiver from 'archiver'
-import { extractText } from './services/pdf'
+import { extractDocument, extractText } from './services/pdf'
+import {
+  PDF_EXTRACTION_VERSION,
+  DIGEST_PROMPT_VERSION,
+  buildDigestFrontmatter,
+  calculateContractFingerprint,
+  classifyArticlePaperType,
+  inspectDigestStatus,
+  getDigestOutputPath,
+  parseDigestDocument,
+  publishDigestAtomically,
+  serializeDigest,
+  validateDigestBody
+} from './services/digest'
+import type { DigestSourceUnit, DigestStatus, MetadataSource } from './services/digest'
 
 // Disable Hardware Acceleration to prevent GPU process crashes and startup delay
 app.disableHardwareAcceleration();
@@ -27,6 +42,285 @@ const MOVE_DETECTION_TIMEOUT = 3000 // 3 seconds window to detect file moves
 // We no longer store full text in DB to save space
 const pdfContextCache = new Map<string, string>();
 const PDF_CACHE_SIZE_LIMIT = 20; // Keep last 20 papers in memory
+
+function getSummaryPathForPdf(filePath: string): string {
+  return getDigestOutputPath(filePath, { unitType: 'article' });
+}
+
+function findPdfFilesRecursively(rootPath: string): string[] {
+  const results: string[] = [];
+  try {
+    const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(rootPath, entry.name);
+      if (entry.isDirectory() && entry.name !== 'summary') {
+        results.push(...findPdfFilesRecursively(fullPath));
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.pdf')) {
+        results.push(fullPath);
+      }
+    }
+  } catch (error) {
+    console.error('Error scanning directory:', rootPath, error);
+  }
+  return results.sort((left, right) => left.localeCompare(right));
+}
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return relativePath === '' || (
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
+function loadGuidancePrompt(): string {
+  const settings = loadSettings();
+  if (settings.ai.guidePrompt && settings.ai.guidePrompt.trim().length > 0) {
+    return settings.ai.guidePrompt;
+  }
+  return getDefaultGuidePrompt();
+}
+
+type DigestGenerationOutcome = 'created' | 'updated' | 'skipped_current';
+
+interface DigestGenerationResult {
+  success: boolean;
+  summaryPath?: string;
+  outcome?: DigestGenerationOutcome;
+  status?: DigestStatus;
+  error?: string;
+}
+
+interface DigestFailureDiagnostic {
+  filePath: string;
+  error: string;
+  failedAt: string;
+  expectedFingerprint: string;
+}
+
+const sourceShaCache = new Map<string, { size: number; mtimeMs: number; sha256: string }>();
+let digestDiagnosticsLoaded = false;
+const digestFailureDiagnostics = new Map<string, DigestFailureDiagnostic>();
+
+function digestDiagnosticsPath(): string {
+  return path.join(app.getPath('userData'), 'digest-diagnostics.json');
+}
+
+function loadDigestDiagnostics(): void {
+  if (digestDiagnosticsLoaded) return;
+  digestDiagnosticsLoaded = true;
+  try {
+    const diagnosticsPath = digestDiagnosticsPath();
+    if (!fs.existsSync(diagnosticsPath)) return;
+    const parsed: unknown = JSON.parse(fs.readFileSync(diagnosticsPath, 'utf8'));
+    if (!Array.isArray(parsed)) return;
+    for (const item of parsed) {
+      if (
+        typeof item === 'object' && item !== null &&
+        typeof (item as DigestFailureDiagnostic).filePath === 'string' &&
+        typeof (item as DigestFailureDiagnostic).error === 'string' &&
+        typeof (item as DigestFailureDiagnostic).failedAt === 'string' &&
+        typeof (item as DigestFailureDiagnostic).expectedFingerprint === 'string'
+      ) {
+        const diagnostic = item as DigestFailureDiagnostic;
+        digestFailureDiagnostics.set(diagnostic.filePath, diagnostic);
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load digest diagnostics:', error);
+  }
+}
+
+function saveDigestDiagnostics(): void {
+  const diagnosticsPath = digestDiagnosticsPath();
+  const temporaryPath = `${diagnosticsPath}.${crypto.randomUUID()}.tmp`;
+  fs.mkdirSync(path.dirname(diagnosticsPath), { recursive: true });
+  fs.writeFileSync(temporaryPath, JSON.stringify(Array.from(digestFailureDiagnostics.values()), null, 2), 'utf8');
+  fs.renameSync(temporaryPath, diagnosticsPath);
+}
+
+function recordDigestFailure(filePath: string, error: string, expectedFingerprint: string): void {
+  try {
+    loadDigestDiagnostics();
+    digestFailureDiagnostics.set(filePath, {
+      filePath,
+      error,
+      failedAt: new Date().toISOString(),
+      expectedFingerprint
+    });
+    saveDigestDiagnostics();
+  } catch (diagnosticError) {
+    console.error('Failed to persist digest failure diagnostics:', diagnosticError);
+  }
+}
+
+function clearDigestFailure(filePath: string): void {
+  try {
+    loadDigestDiagnostics();
+    if (digestFailureDiagnostics.delete(filePath)) saveDigestDiagnostics();
+  } catch (diagnosticError) {
+    console.error('Failed to clear digest failure diagnostics:', diagnosticError);
+  }
+}
+
+async function calculateSha256(filePath: string): Promise<string> {
+  const stat = await fs.promises.stat(filePath);
+  const cached = sourceShaCache.get(filePath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.sha256;
+  const sha256 = await new Promise<string>((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', data => hash.update(data));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+  sourceShaCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, sha256 });
+  return sha256;
+}
+
+function normalizeMetadataSource(value: string | null | undefined, doi?: string | null): MetadataSource {
+  if (value === 'openalex' || value === 'crossref' || value === 'manual') return value;
+  // Existing Scholarly databases predate metadata_source; DOI-bearing records
+  // in this app were populated through OpenAlex.
+  return doi ? 'openalex' : 'filename';
+}
+
+function parseAuthors(authors: string | null | undefined): string[] {
+  return authors?.split(';').map(author => author.trim()).filter(Boolean) ?? [];
+}
+
+async function buildArticleSourceUnit(
+  filePath: string,
+  sourceSha256: string,
+  sourcePageCount: number
+): Promise<DigestSourceUnit> {
+  if (!currentRootPath) throw new Error('Select a Scholarly library root first.');
+  const [article] = await getDb().select().from(articles).where(eq(articles.filePath, filePath));
+  const keywordRows = article
+    ? await getDb()
+      .select({ keyword: keywords.keyword })
+      .from(articleKeywords)
+      .innerJoin(keywords, eq(articleKeywords.keywordId, keywords.id))
+      .where(eq(articleKeywords.articleId, article.id))
+    : [];
+  const settings = loadSettings();
+  const stat = await fs.promises.stat(filePath);
+  const fallback = parseFilename(path.basename(filePath));
+  const sourceRelpath = path.relative(currentRootPath, filePath).split(path.sep).join('/');
+  if (!sourceRelpath || sourceRelpath.startsWith('../') || path.isAbsolute(sourceRelpath)) {
+    throw new Error('The PDF source path cannot be represented relative to the selected library root.');
+  }
+  const title = article?.title?.trim() || fallback.title;
+  return {
+    unitType: 'article',
+    sourceRelpath,
+    sourceSha256,
+    sourceSizeBytes: stat.size,
+    sourcePageCount,
+    sourcePageStart: 1,
+    sourcePageEnd: sourcePageCount,
+    title,
+    authors: parseAuthors(article?.authors ?? fallback.authors),
+    year: article?.year ?? fallback.year,
+    journal: article?.journal ?? null,
+    doi: article?.doi?.trim() || null,
+    metadataSource: normalizeMetadataSource(article?.metadataSource, article?.doi),
+    outputLanguage: settings.ai.outputLanguage,
+    paperType: classifyArticlePaperType(title, article?.abstract ?? null),
+    keywords: keywordRows.map(row => row.keyword),
+    generatorAppVersion: app.getVersion(),
+    generatorModel: settings.ai.guideModel,
+    promptVersion: DIGEST_PROMPT_VERSION,
+    extractionVersion: PDF_EXTRACTION_VERSION
+  };
+}
+
+async function getDigestStatusForPdf(filePath: string, settings = loadSettings()): Promise<DigestStatus> {
+  const summaryPath = getSummaryPathForPdf(filePath);
+  loadDigestDiagnostics();
+  if (!fs.existsSync(filePath)) return 'missing';
+  if (!fs.existsSync(summaryPath)) return digestFailureDiagnostics.has(filePath) ? 'failed' : 'missing';
+  const content = fs.readFileSync(summaryPath, 'utf8');
+  try {
+    const { frontmatter } = parseDigestDocument(content);
+    const sourceSha256 = await calculateSha256(filePath);
+    const sourcePageStart = Number(frontmatter.source_page_start);
+    const sourcePageEnd = Number(frontmatter.source_page_end);
+    if (!Number.isInteger(sourcePageStart) || !Number.isInteger(sourcePageEnd)) return 'failed';
+    const expectedFingerprint = calculateContractFingerprint({
+      sourceSha256,
+      unitType: 'article',
+      sourcePageStart,
+      sourcePageEnd,
+      outputLanguage: settings.ai.outputLanguage,
+      generatorModel: settings.ai.guideModel,
+      promptVersion: DIGEST_PROMPT_VERSION,
+      extractionVersion: PDF_EXTRACTION_VERSION
+    });
+    const diagnostic = digestFailureDiagnostics.get(filePath);
+    if (diagnostic) return 'failed';
+    return inspectDigestStatus(content, expectedFingerprint);
+  } catch {
+    return 'failed';
+  }
+}
+
+async function ensureGuidanceForPdf(filePath: string, force: boolean = false): Promise<DigestGenerationResult> {
+  let expectedFingerprint = '';
+  try {
+    const summaryPath = getSummaryPathForPdf(filePath);
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: `PDF not found: ${filePath}` };
+    }
+    const sourceSha256 = await calculateSha256(filePath);
+    const extracted = await extractDocument(filePath);
+    const sourceUnit = await buildArticleSourceUnit(filePath, sourceSha256, extracted.pageCount);
+    expectedFingerprint = calculateContractFingerprint(sourceUnit);
+    const existingContent = fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, 'utf8') : null;
+    const existingStatus = inspectDigestStatus(existingContent, expectedFingerprint);
+    const existingIsPublishedDigest = (() => {
+      if (!existingContent) return false;
+      try {
+        const parsed = parseDigestDocument(existingContent);
+        return parsed.frontmatter.validation_status === 'passed';
+      } catch {
+        return false;
+      }
+    })();
+
+    if (!force && existingStatus === 'current') {
+      clearDigestFailure(filePath);
+      return { success: true, summaryPath, outcome: 'skipped_current', status: 'current' };
+    }
+
+    const body = await generateGuidance({
+      document: extracted,
+      sourceUnit,
+      additionalGuidance: loadGuidancePrompt()
+    });
+    const bodyValidation = validateDigestBody(body, sourceUnit, extracted);
+    if (!bodyValidation.valid) {
+      throw new Error(`Generated digest body failed validation: ${bodyValidation.errors.join(' | ')}`);
+    }
+    const frontmatter = buildDigestFrontmatter(sourceUnit, body);
+    const completeDigest = serializeDigest(frontmatter, body);
+    publishDigestAtomically(summaryPath, completeDigest, sourceUnit, extracted);
+    clearDigestFailure(filePath);
+
+    return {
+      success: true,
+      summaryPath,
+      outcome: existingIsPublishedDigest ? 'updated' : 'created',
+      status: 'current'
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordDigestFailure(filePath, message, expectedFingerprint);
+    return { success: false, status: 'failed', error: message };
+  }
+}
 
 // Calculate file hash for move detection
 function calculateFileHash(filePath: string): Promise<string> {
@@ -69,6 +363,91 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null
 let watcher: FileWatcher | null = null
 let currentRootPath: string | null = null
+
+interface GuidanceBatchBase {
+  jobId: string;
+  scopePath: string;
+  total: number;
+  current: number;
+  created: number;
+  updated: number;
+  skippedCurrent: number;
+  failed: number;
+  remaining: number;
+  errors: Array<{ filePath: string; error: string }>;
+}
+
+type GuidanceBatchState =
+  | (GuidanceBatchBase & { status: 'running'; currentFilePath: string })
+  | (GuidanceBatchBase & { status: 'completed'; currentFilePath: null });
+
+let guidanceBatchState: GuidanceBatchState | null = null;
+
+function emitGuidanceBatchProgress(): void {
+  if (guidanceBatchState) {
+    win?.webContents.send('guidance-batch-progress', guidanceBatchState);
+  }
+}
+
+async function runGuidanceBatch(jobId: string, scopePath: string, filePaths: string[]): Promise<void> {
+  let created = 0;
+  let updated = 0;
+  let skippedCurrent = 0;
+  let failed = 0;
+  const errors: Array<{ filePath: string; error: string }> = [];
+
+  for (let index = 0; index < filePaths.length; index += 1) {
+    const filePath = filePaths[index];
+    guidanceBatchState = {
+      status: 'running',
+      jobId,
+      scopePath,
+      total: filePaths.length,
+      current: index,
+      created,
+      updated,
+      skippedCurrent,
+      failed,
+      remaining: filePaths.length - created - updated - skippedCurrent,
+      errors,
+      currentFilePath: filePath
+    };
+    emitGuidanceBatchProgress();
+
+    const result = await ensureGuidanceForPdf(filePath, false);
+    if (!result.success) {
+      failed += 1;
+      const error = result.error || 'Unknown digest generation failure.';
+      errors.push({ filePath, error });
+      console.error(`Digest generation failed for ${filePath}: ${error}`);
+    } else if (result.outcome === 'skipped_current') {
+      skippedCurrent += 1;
+    } else if (result.outcome === 'updated') {
+      updated += 1;
+      win?.webContents.send('data-updated');
+    } else if (result.outcome === 'created') {
+      created += 1;
+      win?.webContents.send('data-updated');
+    }
+  }
+
+  guidanceBatchState = {
+    status: 'completed',
+    jobId,
+    scopePath,
+    total: filePaths.length,
+    current: filePaths.length,
+    created,
+    updated,
+    skippedCurrent,
+    failed,
+    remaining: failed,
+    errors,
+    currentFilePath: null
+  };
+  emitGuidanceBatchProgress();
+  win?.webContents.send('data-updated');
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -155,6 +534,7 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
           if (metadata.journal) updates.journal = metadata.journal;
           if (metadata.doi) updates.doi = metadata.doi;
           if (metadata.abstract) updates.abstract = metadata.abstract;
+          updates.metadataSource = 'openalex';
 
           console.log(`   [ProcessFile] Prepared updates:`, JSON.stringify(updates));
   
@@ -250,9 +630,11 @@ app.whenReady().then(async () => {
     
     // Load and apply settings
     const settings = loadSettings();
-    console.log('Loaded settings:', settings);
+    console.log(`Loaded settings (Ollama API key configured: ${Boolean(settings.ai.ollamaApiKey)})`);
 
     if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
+    if (settings.ai.guideModel) setGuideModel(settings.ai.guideModel);
+    setOllamaApiKey(settings.ai.ollamaApiKey);
 
   } catch (e) {
     console.error("Failed to init DB:", e);
@@ -265,15 +647,15 @@ app.whenReady().then(async () => {
   win?.webContents.on('did-finish-load', () => {
      win?.webContents.send('db-ready');
   });
-  
-  // Check Ollama status in background
+
+  // Check Ollama Cloud status in background
   checkOllamaStatus().then(async (ollamaRunning) => {
     if (ollamaRunning) {
-      console.log("✅ Ollama is running");
+      console.log("✅ Ollama Cloud is connected");
       const models = await listModels();
       console.log("   Available models:", models);
     } else {
-      console.warn("⚠️ Ollama is not running! Please start Ollama for AI features.");
+      console.warn("⚠️ Ollama Cloud is not connected. Configure a valid API key in Settings.");
     }
   });
 
@@ -288,31 +670,99 @@ app.whenReady().then(async () => {
     
     const allArticles = await getDb().select().from(articles).orderBy(articles.addedDate);
     // Filter by current root path
-    const filtered = allArticles.filter(a => a.filePath.startsWith(currentRootPath!));
-
-    // Check for guidance file existence
-    const withGuidance = filtered.map(a => {
-      const summaryPath = path.join(path.dirname(a.filePath), 'summary', path.basename(a.filePath, '.pdf') + '.md');
+    const filtered = allArticles.filter(a => isPathWithinRoot(a.filePath, currentRootPath!));
+    // Contract status is based on provenance and generation settings, not file
+    // existence alone. SHA-256 values are cached by size/mtime.
+    const settings = loadSettings();
+    const withGuidance = await Promise.all(filtered.map(async a => {
+      const summaryPath = getSummaryPathForPdf(a.filePath);
+      const guidanceStatus = await getDigestStatusForPdf(a.filePath, settings);
       return {
         ...a,
-        hasGuidance: fs.existsSync(summaryPath)
+        hasGuidance: fs.existsSync(summaryPath),
+        guidanceStatus
       };
-    });
+    }));
     
     return withGuidance;
   });
 
   ipcMain.handle('read-guidance', async (_event, filePath: string) => {
     try {
-      const summaryPath = path.join(path.dirname(filePath), 'summary', path.basename(filePath, '.pdf') + '.md');
+      if (!currentRootPath || !isPathWithinRoot(filePath, currentRootPath)) {
+        return { success: false, status: 'missing', error: 'The PDF is outside the selected root folder.' };
+      }
+      const summaryPath = getSummaryPathForPdf(filePath);
+      const status = await getDigestStatusForPdf(filePath);
       if (fs.existsSync(summaryPath)) {
           const content = fs.readFileSync(summaryPath, 'utf8');
-          return { success: true, content };
+          return { success: true, content, status };
       }
-      return { success: false, error: 'Guidance file not found' };
+      const diagnostic = digestFailureDiagnostics.get(filePath);
+      return { success: false, status, error: diagnostic?.error || 'Digest file not found' };
     } catch (e) {
       return { success: false, error: String(e) };
     }
+  });
+
+  ipcMain.handle('generate-guidance', async (_event, arg: { filePath: string; force?: boolean }) => {
+    try {
+      if (guidanceBatchState?.status === 'running') {
+        return { success: false, error: 'A digest batch is already running.' };
+      }
+      if (!currentRootPath || !isPathWithinRoot(arg.filePath, currentRootPath)) {
+        return { success: false, error: 'The PDF is outside the selected root folder.' };
+      }
+      const result = await ensureGuidanceForPdf(arg.filePath, arg.force ?? false);
+      if (result.success) {
+        win?.webContents.send('data-updated');
+      }
+      return result;
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('start-guidance-batch', async (_event, arg: { folderPath?: string }) => {
+    if (guidanceBatchState?.status === 'running') {
+      return { success: false, error: 'A digest batch is already running.', job: guidanceBatchState };
+    }
+    if (!currentRootPath) {
+      return { success: false, error: 'Select a root folder first.' };
+    }
+
+    const scopePath = path.resolve(arg.folderPath || currentRootPath);
+    if (!isPathWithinRoot(scopePath, currentRootPath) || !fs.existsSync(scopePath)) {
+      return { success: false, error: 'The batch folder is outside the selected root folder.' };
+    }
+
+    const filePaths = findPdfFilesRecursively(scopePath);
+    if (filePaths.length === 0) {
+      return { success: false, error: 'No PDF files were found in the selected folder.' };
+    }
+
+    const jobId = crypto.randomUUID();
+    guidanceBatchState = {
+      status: 'running',
+      jobId,
+      scopePath,
+      total: filePaths.length,
+      current: 0,
+      created: 0,
+      updated: 0,
+      skippedCurrent: 0,
+      failed: 0,
+      remaining: filePaths.length,
+      errors: [],
+      currentFilePath: filePaths[0]
+    };
+    emitGuidanceBatchProgress();
+    void runGuidanceBatch(jobId, scopePath, filePaths);
+    return { success: true, job: guidanceBatchState };
+  });
+
+  ipcMain.handle('get-guidance-batch-status', async () => {
+    return guidanceBatchState;
   });
 
   ipcMain.handle('get-keywords', async () => {
@@ -421,14 +871,70 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('get-settings', async () => {
-    return loadSettings();
+    const settings = loadSettings();
+    return {
+      ai: {
+        chatModel: settings.ai.chatModel,
+        guideModel: settings.ai.guideModel,
+        guidePrompt: settings.ai.guidePrompt,
+        outputLanguage: settings.ai.outputLanguage,
+        promptVersion: settings.ai.promptVersion,
+        hasOllamaApiKey: Boolean(settings.ai.ollamaApiKey)
+      },
+      ui: settings.ui
+    };
   });
 
-  ipcMain.handle('save-settings', async (_event, settings: AppSettings) => {
-    saveSettings(settings);
+  ipcMain.handle('get-default-guide-prompt', async () => {
+    return getDefaultGuidePrompt();
+  });
 
-    if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
-    return true;
+  ipcMain.handle('save-settings', async (_event, update: SettingsUpdate) => {
+    let previousApiKey = '';
+    try {
+      const current = loadSettings();
+      previousApiKey = current.ai.ollamaApiKey;
+      const submittedApiKey = update.ai.ollamaApiKey?.trim() || '';
+      const nextSettings: AppSettings = {
+        ai: {
+          chatModel: update.ai.chatModel,
+          guideModel: update.ai.guideModel,
+          guidePrompt: update.ai.guidePrompt,
+          outputLanguage: update.ai.outputLanguage,
+          promptVersion: DIGEST_PROMPT_VERSION,
+          ollamaApiKey: submittedApiKey || current.ai.ollamaApiKey
+        },
+        ui: update.ui
+      };
+
+      if (!nextSettings.ai.ollamaApiKey) {
+        return { success: false, error: 'Enter an Ollama API key.' };
+      }
+
+      if (submittedApiKey) {
+        setOllamaApiKey(submittedApiKey);
+        const authenticated = await checkOllamaStatus();
+        if (!authenticated) {
+          setOllamaApiKey(previousApiKey);
+          return {
+            success: false,
+            error: previousApiKey
+              ? 'The new Ollama API key could not be authenticated. The previously saved key is unchanged.'
+              : 'The Ollama API key could not be authenticated. Check the key and network connection.'
+          };
+        }
+      }
+
+      saveSettings(nextSettings);
+      setChatModel(nextSettings.ai.chatModel);
+      setGuideModel(nextSettings.ai.guideModel);
+      setOllamaApiKey(nextSettings.ai.ollamaApiKey);
+      const models = await listModels();
+      return { success: true, models };
+    } catch (error) {
+      setOllamaApiKey(previousApiKey);
+      return { success: false, error: String(error) };
+    }
   });
 
   ipcMain.handle('select-root-folder', async () => {
@@ -448,26 +954,7 @@ app.whenReady().then(async () => {
       }
 
       // Initial scan: find all PDFs and report progress
-      const findPDFs = (dir: string): string[] => {
-        const results: string[] = [];
-        try {
-          const entries = fs.readdirSync(dir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.name.startsWith('.')) continue; // Skip hidden files
-            const fullPath = path.join(dir, entry.name);
-            if (entry.isDirectory()) {
-              results.push(...findPDFs(fullPath));
-            } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.pdf')) {
-              results.push(fullPath);
-            }
-          }
-        } catch (e) {
-          console.error('Error scanning directory:', dir, e);
-        }
-        return results;
-      };
-
-      const allPDFs = findPDFs(rootPath);
+      const allPDFs = findPdfFilesRecursively(rootPath);
       const total = allPDFs.length;
       
       // Send scan start event
@@ -532,7 +1019,8 @@ app.whenReady().then(async () => {
                title: metadata.title,
                authors: metadata.authors,
                year: metadata.year,
-               fileHash
+               fileHash,
+               metadataSource: 'filename'
              }).onConflictDoNothing();
              
              // Process for keywords SEQUENTIALLY (wait for completion)
@@ -584,7 +1072,8 @@ app.whenReady().then(async () => {
                   filePath: fp,
                   addedDate: new Date(),
                   title: filename,
-                  fileHash
+                  fileHash,
+                  metadataSource: 'filename'
               }).onConflictDoNothing();
               win?.webContents.send('data-updated');
               

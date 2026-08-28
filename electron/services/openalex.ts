@@ -68,7 +68,7 @@ export function reconstructAbstract(invertedIndex: Record<string, number[]>): st
   words.sort((a, b) => a[0] - b[0]);
   
   // Join words with spaces
-  return words.map(([_, word]) => word).join(' ');
+  return words.map(([, word]) => word).join(' ');
 }
 
 /**

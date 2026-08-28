@@ -375,8 +375,8 @@ export function ArticleDetail({
                                             remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} 
                                             rehypePlugins={[rehypeKatex]}
                                             components={{
-                                                p: ({node, ...props}: any) => <p {...props} />,
-                                                a: ({node, href, ...props}: any) => (
+                                                p: ({node: _node, ...props}: any) => <p {...props} />,
+                                                a: ({node: _node, href, ...props}: any) => (
                                                     <a 
                                                         href={href} 
                                                         onClick={(e) => {

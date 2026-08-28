@@ -11,6 +11,13 @@
     "dist",
     "dist-electron"
   ],
+  "extraResources": [
+    {
+      "from": "RESOURCE/pdf_tutor/resources",
+      "to": "pdf-tutor/resources",
+      "filter": ["prompt.txt"]
+    }
+  ],
   "mac": {
     "icon": "build/icon.png",
     "target": [

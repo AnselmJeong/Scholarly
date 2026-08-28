@@ -59,7 +59,7 @@ export function GuidanceViewer({ content, onClose, title, theme = 'lapis-dark' }
                             remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
                             rehypePlugins={[rehypeKatex]}
                             components={{
-                                a: ({node, href, ...props}: any) => (
+                                a: ({node: _node, href, ...props}: any) => (
                                     <a
                                         href={href}
                                         onClick={(e) => {

@@ -10,6 +10,7 @@ export const articles = sqliteTable('articles', {
   year: integer('year'),
   journal: text('journal'),
   doi: text('doi'),
+  metadataSource: text('metadata_source'),
   abstract: text('abstract'),
   addedDate: integer('added_date', { mode: 'timestamp' }).default(sql`CURRENT_TIMESTAMP`),
   lastModified: integer('last_modified', { mode: 'timestamp' }),

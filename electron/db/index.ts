@@ -33,6 +33,7 @@ export function initDB() {
         year INTEGER,
         journal TEXT,
         doi TEXT,
+        metadata_source TEXT,
         abstract TEXT,
         added_date INTEGER,
         last_modified INTEGER,
@@ -52,6 +53,19 @@ export function initDB() {
         }
     } catch (e) {
         console.error('Migration failed:', e);
+    }
+
+    // Migration: record whether portable digest metadata came from a verified
+    // service or the filename fallback.
+    try {
+        const tableInfo = sqlite!.prepare("PRAGMA table_info(articles)").all() as Array<{ name: string }>;
+        const hasMetadataSource = tableInfo.some(col => col.name === 'metadata_source');
+        if (!hasMetadataSource) {
+            console.log('Migrating: Adding metadata_source column to articles table');
+            run(`ALTER TABLE articles ADD COLUMN metadata_source TEXT;`);
+        }
+    } catch (e) {
+        console.error('Migration for metadata_source failed:', e);
     }
 
     // Migration: Add is_read column if it doesn't exist
