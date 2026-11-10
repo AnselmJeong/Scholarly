@@ -52,7 +52,7 @@ function App() {
   const [rootPath, setRootPath] = useState<string | null>(null);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [articleKeywords, setArticleKeywords] = useState<string[]>([]);
-  const [ollamaStatus, setOllamaStatus] = useState<boolean | null>(null);
+  const [aiStatus, setAIStatus] = useState<boolean | null>(null);
   
   // Settings state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -99,18 +99,18 @@ function App() {
       }
   }, []);
 
-  const checkOllama = useCallback(async () => {
+  const checkAI = useCallback(async () => {
     try {
       const status = await window.ipcRenderer.invoke('check-ollama');
-      setOllamaStatus(status);
+      setAIStatus(status);
     } catch {
-      setOllamaStatus(false);
+      setAIStatus(false);
     }
   }, []);
 
   useEffect(() => {
     fetchData();
-    checkOllama();
+    checkAI();
 
     const handleUpdate = () => {
         fetchData();
@@ -128,7 +128,7 @@ function App() {
     return () => {
       // Cleanup listeners if needed
     };
-  }, [fetchData, checkOllama]);
+  }, [fetchData, checkAI]);
 
   useEffect(() => {
     const handleGuidanceBatchProgress = (_event: unknown, progress: GuidanceBatchState) => {
@@ -482,9 +482,9 @@ function App() {
        {/* Draggable Title Bar Area for Electron */}
        <div className="absolute top-0 left-0 right-0 h-10 drag-region pointer-events-none z-0" />
        
-       {ollamaStatus === false && (
+       {aiStatus === false && (
          <div className="absolute top-4 right-4 z-50 px-4 py-2 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-xs font-medium backdrop-blur-md animate-in slide-in-from-top-4 duration-300">
-           ⚠️ Ollama Cloud unavailable — check Settings
+           ⚠️ AI provider unavailable — check Settings
          </div>
        )}
 
@@ -561,7 +561,7 @@ function App() {
          isOpen={isSettingsOpen}
          onClose={() => {
            setIsSettingsOpen(false);
-           checkOllama();
+           checkAI();
            // Reload settings to apply theme change
            window.ipcRenderer.invoke('get-settings').then((settings: { ui?: { markdownTheme?: MarkdownTheme } }) => {
              if (settings?.ui?.markdownTheme) {

@@ -1,11 +1,11 @@
 {
   "name": "scholarly",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.9.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "tsx --test electron/services/*.test.ts",
+    "test": "node --import tsx --test electron/services/*.test.ts",
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"

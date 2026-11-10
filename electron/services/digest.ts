@@ -4,7 +4,7 @@ import path from 'node:path';
 import { parseDocument, stringify } from 'yaml';
 
 export const DIGEST_SCHEMA_VERSION = 'scholarly-digest/v1' as const;
-export const DIGEST_PROMPT_VERSION = 'scholarly-digest-v2' as const;
+export const DIGEST_PROMPT_VERSION = 'scholarly-deep-reading-v3' as const;
 export const PDF_EXTRACTION_VERSION = 'pdf-pages-v1' as const;
 
 export type DigestUnitType = 'article' | 'book_chapter';
@@ -407,8 +407,6 @@ export function validateDigestBody(
   const majorSections = sectionDigest.split(/^\*\*[^\n]+ —\*\*\s*$/gm).slice(1).filter(Boolean);
   if (majorSections.length < 1) {
     errors.push('The section digest must contain at least one major section using a **[Section name] —** heading.');
-  } else if (majorSections.length > 8) {
-    warnings.push('The section digest contains more than 8 major sections; consider merging minor sections.');
   }
   for (const [index, major] of majorSections.entries()) {
     for (const label of SECTION_DIGEST_LABELS) {
@@ -457,8 +455,8 @@ export function validateDigestBody(
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean);
-  if (coverageLines.length < 4 || coverageLines.length > 8) {
-    warnings.push('Coverage Map should contain 4-8 short non-empty lines.');
+  if (coverageLines.length < 1) {
+    warnings.push('Coverage Map should identify the source sections and physical pages read.');
   }
 
   if (!body.endsWith('.') && !body.endsWith('!') && !body.endsWith('?') && !body.endsWith('다.')) {
@@ -703,7 +701,7 @@ State what the source sets out to explain, review, or test; what material it cov
 
 # 3. Section-by-Section Digest
 
-Cover the source's major sections IN THEIR ORIGINAL ORDER. Use up to 8 entries and merge only genuinely minor subsections. Preserve substantive definitions, mechanisms, methods, results, examples, distinctions, qualifications, and author-stated limitations. For EACH entry, use these three labels and write enough to make that part understandable without reopening the PDF:
+Cover the source's major sections IN THEIR ORIGINAL ORDER. Use as many entries as needed to cover every major section and experiment; merge only genuinely minor subsections. Preserve substantive definitions, mechanisms, methods, results, examples, distinctions, qualifications, and author-stated limitations. For EACH entry, use these three labels and write enough to make that part understandable without reopening the PDF:
 
 **[Section name] —**
 
@@ -727,7 +725,7 @@ Synthesize the complete source into a coherent account: the main thesis or resea
 
 # 6. Coverage Map
 
-[4–8 short lines; bullets allowed]
+[One line per major source section; bullets allowed]
 
 List the source sections covered by the digest and the physical PDF page ranges used for each. Note any unreadable or deliberately compressed portion. This is a reader-facing map, not a self-evaluation of your writing.
 

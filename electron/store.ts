@@ -1,3 +1,5 @@
+import { DEFAULT_PROVIDER_MODELS, isAIProvider } from '../src/types/ai';
+import type { AIProvider, ProviderModels } from '../src/types/ai';
 import { app, safeStorage } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -10,6 +12,10 @@ export type MarkdownTheme = 'lapis-dark' | 'lapis' | 'vercel' | 'newsprint';
 
 export interface AppSettings {
   ai: {
+    provider: AIProvider;
+    claudePath: string;
+    codexPath: string;
+    modelsByProvider: ProviderModels;
     chatModel: string;
     guideModel: string;
     guidePrompt: string;
@@ -24,6 +30,10 @@ export interface AppSettings {
 
 export interface SettingsUpdate {
   ai: {
+    provider: AIProvider;
+    claudePath: string;
+    codexPath: string;
+    modelsByProvider: ProviderModels;
     chatModel: string;
     guideModel: string;
     guidePrompt: string;
@@ -102,6 +112,10 @@ function isLegacyCriticalReadingPrompt(value: string): boolean {
 
 const DEFAULT_SETTINGS: AppSettings = {
   ai: {
+    provider: 'ollama',
+    claudePath: '',
+    codexPath: '',
+    modelsByProvider: DEFAULT_PROVIDER_MODELS,
     chatModel: 'mistral-large-3:675b-cloud',
     guideModel: 'nemotron-3-nano:30b-cloud',
     guidePrompt: getDefaultGuidePrompt(),
@@ -128,6 +142,21 @@ export function loadSettings(): AppSettings {
 
       const ai = isRecord(parsed.ai) ? parsed.ai : {};
       const ui = isRecord(parsed.ui) ? parsed.ui : {};
+      const provider = isAIProvider(ai.provider) ? ai.provider : 'ollama';
+      const modelsByProvider = { ...DEFAULT_PROVIDER_MODELS };
+      if (isRecord(ai.modelsByProvider)) {
+        for (const name of ['ollama', 'claude', 'codex'] as const) {
+          const pair = ai.modelsByProvider[name];
+          if (isRecord(pair)) modelsByProvider[name] = {
+            chatModel: readString(pair, 'chatModel', DEFAULT_PROVIDER_MODELS[name].chatModel),
+            guideModel: readString(pair, 'guideModel', DEFAULT_PROVIDER_MODELS[name].guideModel)
+          };
+        }
+      }
+      modelsByProvider[provider] = {
+        chatModel: readString(ai, 'chatModel', modelsByProvider[provider].chatModel),
+        guideModel: readString(ai, 'guideModel', modelsByProvider[provider].guideModel)
+      };
       const encryptedApiKey = readString(ai, 'ollamaApiKeyEncrypted', '');
       // Read a short-lived legacy plaintext value only so the next save can migrate it.
       const legacyApiKey = readString(ai, 'ollamaApiKey', '');
@@ -136,8 +165,11 @@ export function loadSettings(): AppSettings {
 
       return {
         ai: {
-          chatModel: readString(ai, 'chatModel', DEFAULT_SETTINGS.ai.chatModel),
-          guideModel: readString(ai, 'guideModel', DEFAULT_SETTINGS.ai.guideModel),
+          provider,
+          claudePath: readString(ai, 'claudePath', ''),
+          codexPath: readString(ai, 'codexPath', ''),
+          modelsByProvider,
+          ...modelsByProvider[provider],
           guidePrompt: (legacyGuidePrompt && storedGuidePrompt.trim() === legacyGuidePrompt.trim()) || isLegacyCriticalReadingPrompt(storedGuidePrompt)
             ? ''
             : storedGuidePrompt,
@@ -165,6 +197,10 @@ export function saveSettings(settings: AppSettings): void {
     const settingsPath = getSettingsPath();
     const persistedSettings = {
       ai: {
+        provider: settings.ai.provider,
+        claudePath: settings.ai.claudePath,
+        codexPath: settings.ai.codexPath,
+        modelsByProvider: settings.ai.modelsByProvider,
         chatModel: settings.ai.chatModel,
         guideModel: settings.ai.guideModel,
         guidePrompt: settings.ai.guidePrompt,

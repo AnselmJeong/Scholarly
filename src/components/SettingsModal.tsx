@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { DEFAULT_PROVIDER_MODELS } from '../types/ai';
+import type { AIProvider, ProviderModels, ProviderStatus } from '../types/ai';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -9,6 +11,10 @@ type MarkdownTheme = 'lapis-dark' | 'lapis' | 'vercel' | 'newsprint';
 
 interface AppSettings {
   ai: {
+    provider: AIProvider;
+    claudePath: string;
+    codexPath: string;
+    modelsByProvider: ProviderModels;
     chatModel: string;
     guideModel: string;
     guidePrompt: string;
@@ -26,12 +32,18 @@ type SaveSettingsResult =
   | { success: false; error: string };
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
+  const [provider, setProvider] = useState<AIProvider>('ollama');
+  const [claudePath, setClaudePath] = useState('');
+  const [codexPath, setCodexPath] = useState('');
+  const [modelsByProvider, setModelsByProvider] = useState<ProviderModels>(DEFAULT_PROVIDER_MODELS);
+  const [connectionStatus, setConnectionStatus] = useState<ProviderStatus | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [chatModel, setChatModel] = useState('');
   const [guideModel, setGuideModel] = useState('nemotron-3-nano:30b-cloud');
   const [guidePrompt, setGuidePrompt] = useState('');
   const [outputLanguage, setOutputLanguage] = useState<'ko' | 'en'>('ko');
-  const [promptVersion, setPromptVersion] = useState('scholarly-digest-v2');
+  const [promptVersion, setPromptVersion] = useState('scholarly-deep-reading-v3');
   const [ollamaApiKey, setOllamaApiKey] = useState('');
   const [hasOllamaApiKey, setHasOllamaApiKey] = useState(false);
   const [markdownTheme, setMarkdownTheme] = useState<MarkdownTheme>('lapis-dark');
@@ -45,24 +57,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       setIsLoading(true);
       setOllamaApiKey('');
       setSaveError(null);
-      Promise.all([
-        window.ipcRenderer.invoke('list-models'),
-        window.ipcRenderer.invoke('get-settings')
-      ])
-        .then(([list, settings]: [string[], AppSettings]) => {
-          setModels(list || []);
+      setConnectionStatus(null);
+      window.ipcRenderer.invoke<AppSettings>('get-settings')
+        .then((settings) => {
+          setModels([]);
           if (settings && settings.ai) {
+             setProvider(settings.ai.provider || 'ollama');
+             setClaudePath(settings.ai.claudePath || '');
+             setCodexPath(settings.ai.codexPath || '');
+             setModelsByProvider(settings.ai.modelsByProvider || DEFAULT_PROVIDER_MODELS);
              setChatModel(settings.ai.chatModel);
-             setGuideModel(settings.ai.guideModel || 'nemotron-3-nano:30b-cloud');
+             setGuideModel(settings.ai.guideModel ?? '');
              setGuidePrompt(settings.ai.guidePrompt || '');
              setOutputLanguage(settings.ai.outputLanguage === 'en' ? 'en' : 'ko');
-             setPromptVersion(settings.ai.promptVersion || 'scholarly-digest-v2');
+             setPromptVersion(settings.ai.promptVersion || 'scholarly-deep-reading-v3');
              setHasOllamaApiKey(settings.ai.hasOllamaApiKey);
           }
           if (settings && settings.ui) {
              setMarkdownTheme(settings.ui.markdownTheme);
           }
         })
+        .catch(error => setSaveError(String(error)))
         .finally(() => setIsLoading(false));
     }
   }, [isOpen]);
@@ -72,7 +87,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setSaveError(null);
     try {
       const result = await window.ipcRenderer.invoke<SaveSettingsResult>('save-settings', {
-        ai: { chatModel, guideModel, guidePrompt, outputLanguage, promptVersion, ollamaApiKey },
+        ai: { provider, claudePath, codexPath, modelsByProvider, chatModel, guideModel, guidePrompt, outputLanguage, promptVersion, ollamaApiKey },
         ui: { markdownTheme }
       });
       if (!result.success) {
@@ -80,7 +95,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         return;
       }
       setModels(result.models);
-      setHasOllamaApiKey(true);
+      setHasOllamaApiKey(hasOllamaApiKey || Boolean(ollamaApiKey));
       onClose();
     } catch (error) {
       setSaveError(String(error));
@@ -98,7 +113,31 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }
   };
 
-  const modelOptions = Array.from(new Set([...models, chatModel, guideModel].filter(Boolean)));
+  const changeProvider = (next: AIProvider) => {
+    const saved = { ...modelsByProvider, [provider]: { chatModel, guideModel } };
+    setModelsByProvider(saved);
+    setProvider(next);
+    setChatModel(saved[next].chatModel);
+    setGuideModel(saved[next].guideModel);
+    setConnectionStatus(null);
+    setModels([]);
+  };
+
+  const checkConnection = async () => {
+    setIsChecking(true);
+    setConnectionStatus(null);
+    try {
+      const status = await window.ipcRenderer.invoke<ProviderStatus>('check-ai-provider', { provider, claudePath, codexPath, ollamaApiKey });
+      setConnectionStatus(status);
+    } catch (error) {
+      setConnectionStatus({ available: false, message: String(error) });
+    } finally { setIsChecking(false); }
+  };
+
+  const modelOptions = Array.from(new Set([
+    ...(provider === 'claude' ? ['sonnet', 'opus', 'haiku'] : []),
+    ...models, chatModel, guideModel
+  ].filter(Boolean)));
 
   if (!isOpen) return null;
 
@@ -144,8 +183,24 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
           {!isLoading && activeTab === 'general' && (
             <>
+              <div className="space-y-3">
+                <label htmlFor="ai-provider" className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">AI Provider · Chat & Notes</label>
+                <select id="ai-provider" value={provider} disabled={isChecking} onChange={event => changeProvider(event.target.value as AIProvider)} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white">
+                  <option value="ollama">Ollama Cloud · OpenAI-compatible API</option>
+                  <option value="claude">Claude · Subscription (Claude Code)</option>
+                  <option value="codex">Codex · ChatGPT Subscription</option>
+                </select>
+                {provider !== 'ollama' && <>
+                  <p className="text-xs text-slate-400">Uses your signed-in {provider === 'claude' ? 'Claude Code' : 'Codex CLI'} subscription. No API key is needed. Requests count toward the subscription’s usage limits.</p>
+                  <p className="text-xs text-slate-400">First sign in from Terminal: <code className="text-slate-200">{provider === 'claude' ? 'claude auth login' : 'codex login'}</code></p>
+                  <label htmlFor="cli-path" className="block text-xs text-slate-400">CLI executable path (optional)</label>
+                  <input id="cli-path" value={provider === 'claude' ? claudePath : codexPath} onChange={event => { (provider === 'claude' ? setClaudePath : setCodexPath)(event.target.value); setConnectionStatus(null); }} placeholder={`Auto-detect ${provider} · or enter /absolute/path/${provider}`} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white" />
+                </>}
+                <button type="button" onClick={checkConnection} disabled={isChecking} className="px-3 py-2 text-sm text-blue-200 border border-blue-500/40 rounded-lg disabled:opacity-50">{isChecking ? 'Checking…' : 'Check Connection'}</button>
+                {connectionStatus && <p role="status" className={`text-xs ${connectionStatus.available ? 'text-green-300' : 'text-amber-300'}`}>{connectionStatus.message}</p>}
+              </div>
               {/* Ollama Cloud Connection */}
-              <div>
+              {provider === 'ollama' && <div>
                 <div className="flex items-center justify-between mb-3">
                   <label htmlFor="ollama-api-key" className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                     Ollama Cloud
@@ -171,7 +226,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     Stored with the operating system credential store and sent only to Ollama Cloud.
                   </p>
                 </div>
-              </div>
+              </div>}
 
               {/* Chat Model Config */}
               <div>
@@ -185,16 +240,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 </div>
 
                 <div className="space-y-2">
-                    <select
+                    <input
+                        aria-label="Chat model"
+                        list="chat-model-options"
                         value={chatModel}
-                        onChange={(e) => setChatModel(e.target.value)}
-                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-green-500/50 focus:bg-slate-800/80 transition-all appearance-none"
-                    >
-                        {modelOptions.length === 0 && <option value="">No models found</option>}
-                        {modelOptions.map(model => (
-                            <option key={`chat-${model}`} value={model}>{model}</option>
-                        ))}
-                    </select>
+                        onChange={event => setChatModel(event.target.value)}
+                        placeholder={provider === 'ollama' ? 'Model ID from ollama.com' : 'Leave empty to use the CLI default'}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500/60"
+                    />
+                    <datalist id="chat-model-options">{modelOptions.map(model => <option key={model} value={model} />)}</datalist>
                     <p className="text-[11px] text-slate-500">
                         Used for answering questions about the paper in the chat interface.
                     </p>
@@ -213,18 +267,17 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 </div>
 
                 <div className="space-y-2">
-                    <select
+                    <input
+                        aria-label="Note generation model"
+                        list="guide-model-options"
                         value={guideModel}
-                        onChange={(e) => setGuideModel(e.target.value)}
-                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500/50 focus:bg-slate-800/80 transition-all appearance-none"
-                    >
-                        {modelOptions.length === 0 && <option value="">No models found</option>}
-                        {modelOptions.map(model => (
-                            <option key={`guide-${model}`} value={model}>{model}</option>
-                        ))}
-                    </select>
+                        onChange={event => setGuideModel(event.target.value)}
+                        placeholder={provider === 'ollama' ? 'Model ID from ollama.com' : 'Leave empty to use the CLI default'}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500/60"
+                    />
+                    <datalist id="guide-model-options">{modelOptions.map(model => <option key={model} value={model} />)}</datalist>
                     <p className="text-[11px] text-slate-500">
-                        Used when generating GUIDE markdown files from PDF content.
+                        Used for reading plans, Markdown notes, and separate evidence reviews. Longer papers require more requests.
                     </p>
                 </div>
               </div>
@@ -302,15 +355,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 placeholder="Optional tone or emphasis preferences. The structural and grounding contract is always enforced separately."
               />
               <p className="text-[11px] text-slate-500 mt-2">
-                This may refine tone or emphasis but cannot override the non-editable {promptVersion} contract.
+                Notes follow paper-type reading questions, an evidence plan, and a separate quality review before saving. This guidance refines tone and emphasis within the {promptVersion} contract.
               </p>
             </div>
           )}
 
-          {models.length === 0 && !isLoading && (
+          {provider === 'ollama' && !hasOllamaApiKey && !isLoading && (
               <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-center">
-                  <p className="text-amber-300 text-sm font-medium">Ollama Cloud models are unavailable.</p>
-                  <p className="text-amber-300/70 text-xs mt-1">Enter a valid API key above, then save to connect.</p>
+                  <p className="text-amber-300 text-sm font-medium">Ollama API key is not saved yet.</p>
+                  <p className="text-amber-300/70 text-xs mt-1">Enter your API key and model IDs, then check the connection.</p>
               </div>
           )}
 
@@ -331,7 +384,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             </button>
             <button
                 onClick={handleSave}
-                disabled={isSaving}
+                disabled={isSaving || isLoading || isChecking}
                 className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-wait text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-blue-600/20"
             >
                 {isSaving ? 'Saving...' : 'Save Changes'}

@@ -1,9 +1,11 @@
+import { isAIProvider } from '../src/types/ai';
+import type { ProviderConnection } from '../src/types/ai';
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
-import { checkOllamaStatus, listModels, setModel, chatWithPaper, setChatModel, setGuideModel, setOllamaApiKey, generateGuidance } from './services/ai'
+import { checkAIStatus, setProviderConnection, listModels, setModel, chatWithPaper, setChatModel, setGuideModel, setOllamaApiKey, generateGuidance } from './services/ai'
 import type { ChatCompletionUsage, DigestGenerationPhase } from './services/ai'
 import { loadSettings, saveSettings, getDefaultGuidePrompt } from './store'
 import type { AppSettings, SettingsUpdate } from './store'
@@ -28,6 +30,7 @@ import {
   publishDigestAtomically,
   serializeDigest,
   shouldStopDigestBatch,
+  sha256,
   validateDigestBody
 } from './services/digest'
 import type { DigestSourceUnit, DigestStatus, ExtractedDocument, MetadataSource } from './services/digest'
@@ -258,7 +261,7 @@ async function buildArticleSourceUnit(
     ),
     keywords: keywordRows.map(row => row.keyword),
     generatorAppVersion: app.getVersion(),
-    generatorModel: settings.ai.guideModel,
+    generatorModel: `${settings.ai.provider}:${settings.ai.guideModel || 'default'}`,
     promptVersion: DIGEST_PROMPT_VERSION,
     extractionVersion: PDF_EXTRACTION_VERSION
   };
@@ -282,7 +285,7 @@ async function getDigestStatusForPdf(filePath: string, settings = loadSettings()
       sourcePageStart,
       sourcePageEnd,
       outputLanguage: settings.ai.outputLanguage,
-      generatorModel: settings.ai.guideModel,
+      generatorModel: `${settings.ai.provider}:${settings.ai.guideModel || 'default'}`,
       promptVersion: DIGEST_PROMPT_VERSION,
       extractionVersion: PDF_EXTRACTION_VERSION
     });
@@ -304,6 +307,7 @@ interface DigestRunOptions {
 }
 
 const MAX_GENERATION_ATTEMPTS = 2;
+let activeDigestRuns = 0;
 
 async function ensureGuidanceForPdf(
   filePath: string,
@@ -312,6 +316,7 @@ async function ensureGuidanceForPdf(
 ): Promise<DigestGenerationResult> {
   let expectedFingerprint = '';
   const attempts: DigestAttemptDiagnostic[] = [];
+  activeDigestRuns += 1;
   try {
     if (options.signal?.aborted) {
       return { success: false, cancelled: true, error: 'Digest generation cancelled.' };
@@ -375,10 +380,23 @@ async function ensureGuidanceForPdf(
         throw new Error(`Generated digest body failed validation after ${MAX_GENERATION_ATTEMPTS} attempts: ${bodyValidation.errors.join(' | ')}`);
       }
 
+      if (!completion.readingAudit || completion.readingAudit.finalBodySha256 !== sha256(body)) {
+        throw new Error('A passing quality review for this exact note is required before saving.');
+      }
       const frontmatter = buildDigestFrontmatter(sourceUnit, body);
       const completeDigest = serializeDigest(frontmatter, body);
       options.onProgress?.('publishing', 'Publishing validated digest');
       publishDigestAtomically(summaryPath, completeDigest, sourceUnit, extracted);
+      // The published note is already valid. Audit persistence failure must not
+      // turn a successful atomic publication into a reported generation failure.
+      try {
+        const auditPath = `${summaryPath}.reading.json`;
+        const temporaryAudit = `${auditPath}.${crypto.randomUUID()}.tmp`;
+        try {
+          fs.writeFileSync(temporaryAudit, JSON.stringify({ ...completion.readingAudit, sourceSha256, generatorModel: sourceUnit.generatorModel }, null, 2), { mode: 0o600 });
+          fs.renameSync(temporaryAudit, auditPath);
+        } finally { if (fs.existsSync(temporaryAudit)) fs.unlinkSync(temporaryAudit); }
+      } catch { bodyValidation.warnings.push('The note passed review, but its reading audit could not be saved.'); }
       clearDigestFailure(filePath);
       if (bodyValidation.warnings.length > 0) {
         console.warn(`Digest published with ${bodyValidation.warnings.length} quality warning(s) for ${filePath}: ${bodyValidation.warnings.join(' | ')}`);
@@ -400,6 +418,8 @@ async function ensureGuidanceForPdf(
     const message = error instanceof Error ? error.message : String(error);
     recordDigestFailure(filePath, message, expectedFingerprint, attempts);
     return { success: false, status: 'failed', error: message };
+  } finally {
+    activeDigestRuns -= 1;
   }
 }
 
@@ -815,9 +835,10 @@ app.whenReady().then(async () => {
     const settings = loadSettings();
     console.log(`Loaded settings (Ollama API key configured: ${Boolean(settings.ai.ollamaApiKey)})`);
 
-    if (settings.ai.chatModel) setChatModel(settings.ai.chatModel);
-    if (settings.ai.guideModel) setGuideModel(settings.ai.guideModel);
+    setChatModel(settings.ai.chatModel);
+    setGuideModel(settings.ai.guideModel);
     setOllamaApiKey(settings.ai.ollamaApiKey);
+    setProviderConnection(settings.ai);
 
   } catch (e) {
     console.error("Failed to init DB:", e);
@@ -831,16 +852,7 @@ app.whenReady().then(async () => {
      win?.webContents.send('db-ready');
   });
 
-  // Check Ollama Cloud status in background
-  checkOllamaStatus().then(async (ollamaRunning) => {
-    if (ollamaRunning) {
-      console.log("✅ Ollama Cloud is connected");
-      const models = await listModels();
-      console.log("   Available models:", models);
-    } else {
-      console.warn("⚠️ Ollama Cloud is not connected. Configure a valid API key in Settings.");
-    }
-  });
+  void checkAIStatus().then(status => console.log(status.message));
 
   // IPC Handlers
 
@@ -1075,7 +1087,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('check-ollama', async () => {
-    return await checkOllamaStatus();
+    return (await checkAIStatus()).available;
   });
 
   ipcMain.handle('list-models', async () => {
@@ -1092,6 +1104,10 @@ app.whenReady().then(async () => {
     const settings = loadSettings();
     return {
       ai: {
+        provider: settings.ai.provider,
+        claudePath: settings.ai.claudePath,
+        codexPath: settings.ai.codexPath,
+        modelsByProvider: settings.ai.modelsByProvider,
         chatModel: settings.ai.chatModel,
         guideModel: settings.ai.guideModel,
         guidePrompt: settings.ai.guidePrompt,
@@ -1107,50 +1123,53 @@ app.whenReady().then(async () => {
     return getDefaultGuidePrompt();
   });
 
+  ipcMain.handle('check-ai-provider', async (_event, candidate: ProviderConnection & { ollamaApiKey?: string }) => {
+    if (!isAIProvider(candidate?.provider) || typeof candidate.claudePath !== 'string' || typeof candidate.codexPath !== 'string') {
+      return { available: false, message: 'Invalid provider settings.' };
+    }
+    return checkAIStatus(candidate, candidate.ollamaApiKey?.trim() || loadSettings().ai.ollamaApiKey);
+  });
+
   ipcMain.handle('save-settings', async (_event, update: SettingsUpdate) => {
-    let previousApiKey = '';
     try {
+      if (activeDigestRuns || guidanceBatchState?.status === 'running' || guidanceBatchState?.status === 'cancelling') {
+        return { success: false, error: 'Wait for note generation to finish, or cancel it before changing settings.' };
+      }
       const current = loadSettings();
-      previousApiKey = current.ai.ollamaApiKey;
+      if (!isAIProvider(update?.ai?.provider) || typeof update.ai.chatModel !== 'string' || typeof update.ai.guideModel !== 'string' ||
+          typeof update.ai.guidePrompt !== 'string' || typeof update.ai.claudePath !== 'string' || typeof update.ai.codexPath !== 'string' ||
+          !['ko', 'en'].includes(update.ai.outputLanguage) || !['lapis-dark', 'lapis', 'vercel', 'newsprint'].includes(update.ui?.markdownTheme)) {
+        return { success: false, error: 'Invalid settings.' };
+      }
       const submittedApiKey = update.ai.ollamaApiKey?.trim() || '';
+      const modelsByProvider = { ...current.ai.modelsByProvider };
+      for (const provider of ['ollama', 'claude', 'codex'] as const) {
+        const pair = update.ai.modelsByProvider?.[provider];
+        if (pair && typeof pair.chatModel === 'string' && typeof pair.guideModel === 'string') modelsByProvider[provider] = pair;
+      }
+      modelsByProvider[update.ai.provider] = { chatModel: update.ai.chatModel.trim(), guideModel: update.ai.guideModel.trim() };
       const nextSettings: AppSettings = {
         ai: {
-          chatModel: update.ai.chatModel,
-          guideModel: update.ai.guideModel,
-          guidePrompt: update.ai.guidePrompt,
-          outputLanguage: update.ai.outputLanguage,
+          ...current.ai, ...update.ai, modelsByProvider,
+          ...modelsByProvider[update.ai.provider],
           promptVersion: DIGEST_PROMPT_VERSION,
           ollamaApiKey: submittedApiKey || current.ai.ollamaApiKey
         },
         ui: update.ui
       };
-
-      if (!nextSettings.ai.ollamaApiKey) {
-        return { success: false, error: 'Enter an Ollama API key.' };
+      if (nextSettings.ai.provider === 'ollama' && (!nextSettings.ai.ollamaApiKey || !nextSettings.ai.chatModel || !nextSettings.ai.guideModel)) {
+        return { success: false, error: 'Ollama Cloud requires an API key and model names.' };
       }
-
-      if (submittedApiKey) {
-        setOllamaApiKey(submittedApiKey);
-        const authenticated = await checkOllamaStatus();
-        if (!authenticated) {
-          setOllamaApiKey(previousApiKey);
-          return {
-            success: false,
-            error: previousApiKey
-              ? 'The new Ollama API key could not be authenticated. The previously saved key is unchanged.'
-              : 'The Ollama API key could not be authenticated. Check the key and network connection.'
-          };
-        }
-      }
-
+      // Save independently of connectivity. The explicit Check Connection action
+      // reports authentication; an offline machine can still change settings.
       saveSettings(nextSettings);
       setChatModel(nextSettings.ai.chatModel);
       setGuideModel(nextSettings.ai.guideModel);
       setOllamaApiKey(nextSettings.ai.ollamaApiKey);
-      const models = await listModels();
-      return { success: true, models };
+      setProviderConnection(nextSettings.ai);
+      win?.webContents.send('data-updated');
+      return { success: true, models: [] };
     } catch (error) {
-      setOllamaApiKey(previousApiKey);
       return { success: false, error: String(error) };
     }
   });

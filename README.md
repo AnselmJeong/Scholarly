@@ -1,4 +1,11 @@
-# React + TypeScript + Vite
+# Scholarly
+
+Academic PDF library with paper Q&A and evidence-first Markdown reading notes.
+
+See [PDF deep reading and AI provider setup](docs/deep-reading.md) for the reading
+workflow, Claude/Codex subscription connections, Ollama Cloud settings, and tests.
+
+## Frontend tooling
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
