@@ -26,6 +26,10 @@ export interface AppSettings {
   ui: {
     markdownTheme: MarkdownTheme;
   };
+  library: {
+    lastRootPath: string | null;
+    lastFolderPath: string | null;
+  };
 }
 
 export interface SettingsUpdate {
@@ -53,6 +57,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readString(record: Record<string, unknown>, key: string, fallback: string): string {
   const value = record[key];
   return typeof value === 'string' ? value : fallback;
+}
+
+function readNullableString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === 'string' && value.trim() ? value : null;
 }
 
 function isMarkdownTheme(value: unknown): value is MarkdownTheme {
@@ -125,6 +134,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   ui: {
     markdownTheme: 'lapis-dark'
+  },
+  library: {
+    lastRootPath: null,
+    lastFolderPath: null
   }
 };
 
@@ -142,6 +155,7 @@ export function loadSettings(): AppSettings {
 
       const ai = isRecord(parsed.ai) ? parsed.ai : {};
       const ui = isRecord(parsed.ui) ? parsed.ui : {};
+      const library = isRecord(parsed.library) ? parsed.library : {};
       const provider = isAIProvider(ai.provider) ? ai.provider : 'ollama';
       const modelsByProvider = { ...DEFAULT_PROVIDER_MODELS };
       if (isRecord(ai.modelsByProvider)) {
@@ -183,6 +197,10 @@ export function loadSettings(): AppSettings {
           markdownTheme: isMarkdownTheme(ui.markdownTheme)
             ? ui.markdownTheme
             : DEFAULT_SETTINGS.ui.markdownTheme
+        },
+        library: {
+          lastRootPath: readNullableString(library, 'lastRootPath'),
+          lastFolderPath: readNullableString(library, 'lastFolderPath')
         }
       };
     }
@@ -208,11 +226,20 @@ export function saveSettings(settings: AppSettings): void {
         promptVersion: settings.ai.promptVersion,
         ollamaApiKeyEncrypted: encryptApiKey(settings.ai.ollamaApiKey)
       },
-      ui: settings.ui
+      ui: settings.ui,
+      library: settings.library
     };
     fs.writeFileSync(settingsPath, JSON.stringify(persistedSettings, null, 2), 'utf8');
   } catch (error) {
     console.error('Error saving settings:', error);
     throw error;
   }
+}
+
+export function saveLibraryLocation(lastRootPath: string | null, lastFolderPath: string | null): void {
+  const settings = loadSettings();
+  saveSettings({
+    ...settings,
+    library: { lastRootPath, lastFolderPath }
+  });
 }

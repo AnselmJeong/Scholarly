@@ -5,7 +5,7 @@ import { parseDocument, stringify } from 'yaml';
 
 export const DIGEST_SCHEMA_VERSION = 'scholarly-digest/v1' as const;
 export const DIGEST_PROMPT_VERSION = 'scholarly-deep-reading-v3' as const;
-export const PDF_EXTRACTION_VERSION = 'pdf-pages-v1' as const;
+export const PDF_EXTRACTION_VERSION = 'pdf-pages-v2-references-omitted' as const;
 
 export type DigestUnitType = 'article' | 'book_chapter';
 export type DigestOutputLanguage = 'ko' | 'en';

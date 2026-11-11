@@ -325,7 +325,7 @@ export function ArticleList({
                     (() => {
                       const isGuideGenerating = guideGenerationInProgressPaths.includes(article.filePath);
                       const status = article.guidanceStatus ?? (article.hasGuidance ? 'stale' : 'missing');
-                      const isGuideQueued = guidanceBatch?.status === 'running' && status !== 'current' && !isGuideGenerating;
+                      const isGuideQueued = guidanceBatch?.status === 'running' && !article.hasGuidance && status !== 'current' && !isGuideGenerating;
                       const statusStyle = status === 'current'
                         ? 'text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300'
                         : status === 'stale'
@@ -335,12 +335,14 @@ export function ArticleList({
                             : 'text-slate-500 bg-slate-800/70 border border-slate-700 hover:bg-amber-900/20 hover:border-amber-700/50 hover:text-amber-300';
                       const statusLabel = status === 'current'
                         ? 'Open current digest'
-                        : status === 'stale'
-                          ? 'Digest is stale — regenerate'
+                        : article.hasGuidance
+                          ? status === 'failed'
+                            ? 'Open previous digest — last refresh failed'
+                            : 'Open existing digest — refresh it with Digest Folder'
                           : status === 'failed'
                             ? 'Last generation failed — retry'
                             : 'Generate digest';
-                      const statusIcon = status === 'current' ? '📄' : status === 'stale' ? '↻' : status === 'failed' ? '!' : '✍';
+                      const statusIcon = article.hasGuidance ? '📄' : status === 'failed' ? '!' : '✍';
                       return (
                     <div 
                         key={article.id}
@@ -415,7 +417,7 @@ export function ArticleList({
                                 onClick={(e) => {
                                     e.stopPropagation();
                                     onSelect(article.id);
-                                    if (isGuideGenerating || isGuideQueued) return;
+                                    if (!article.hasGuidance && (isGuideGenerating || isGuideQueued)) return;
                                     onOpenGuidance && onOpenGuidance(article);
                                 }}
                                 className={cn(
@@ -427,7 +429,9 @@ export function ArticleList({
                                         :
                                     statusStyle
                                 )}
-                                title={isGuideGenerating ? "Generating digest..." : (isGuideQueued ? "Queued for digest generation" : statusLabel)}
+                                title={isGuideGenerating
+                                  ? article.hasGuidance ? "Refreshing digest — click to open the previous digest" : "Generating digest..."
+                                  : (isGuideQueued ? "Queued for digest generation" : statusLabel)}
                             >
                                 {isGuideGenerating ? (
                                   <span className="inline-block w-3.5 h-3.5 border-2 border-amber-300/80 border-t-transparent rounded-full animate-spin" />

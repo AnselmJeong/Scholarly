@@ -7,7 +7,7 @@ import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
 import { checkAIStatus, setProviderConnection, listModels, setModel, chatWithPaper, setChatModel, setGuideModel, setOllamaApiKey, generateGuidance } from './services/ai'
 import type { ChatCompletionUsage, DigestGenerationPhase } from './services/ai'
-import { loadSettings, saveSettings, getDefaultGuidePrompt } from './store'
+import { loadSettings, saveSettings, saveLibraryLocation, getDefaultGuidePrompt } from './store'
 import type { AppSettings, SettingsUpdate } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
 import { generateBibtexForArticles } from './services/bibtex'
@@ -17,6 +17,7 @@ import fs from 'node:fs'
 import crypto from 'node:crypto'
 import archiver from 'archiver'
 import { extractDocument, extractText } from './services/pdf'
+import { resolveRestorableRootPath } from './services/root-folder'
 import {
   PDF_EXTRACTION_VERSION,
   DIGEST_PROMPT_VERSION,
@@ -327,7 +328,7 @@ async function ensureGuidanceForPdf(
     }
     const sourceSha256 = await calculateSha256(filePath);
     options.onProgress?.('extracting', 'Extracting page-marked PDF text');
-    const extracted = await extractDocument(filePath);
+    const extracted = await extractDocument(filePath, { omitReferences: true });
     const sourceUnit = await buildArticleSourceUnit(filePath, sourceSha256, extracted);
     expectedFingerprint = calculateContractFingerprint(sourceUnit);
     const existingContent = fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, 'utf8') : null;
@@ -464,6 +465,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null
 let watcher: FileWatcher | null = null
 let currentRootPath: string | null = null
+let currentFolderPath: string | null = null
 
 type GuidanceBatchStatus = 'running' | 'cancelling' | 'completed' | 'cancelled' | 'stopped';
 type GuidanceBatchPhase = DigestGenerationPhase | 'queued' | 'extracting' | 'validating' | 'repairing' | 'publishing' | 'cancelling' | 'idle';
@@ -815,7 +817,80 @@ async function processFile(filePath: string, force: boolean = false): Promise<vo
   }
 }
 
+function stopRootWatcher(): void {
+  if (!watcher) return;
+  watcher.stop();
+  watcher.removeAllListeners();
+  watcher = null;
+}
+
+function startRootWatcher(rootPath: string): void {
+  stopRootWatcher();
+  watcher = new FileWatcher();
+  watcher.on('add', async (fp) => {
+    console.log('📁 File detected:', fp);
+    try {
+      const filename = path.basename(fp);
+      const fileHash = await calculateFileHash(fp);
+      const movedFile = recentlyDeletedFiles.get(fileHash);
+      if (movedFile && (Date.now() - movedFile.timestamp) < MOVE_DETECTION_TIMEOUT) {
+        console.log(`📦 File moved: ${movedFile.path} -> ${fp}`);
+        await getDb().update(articles)
+          .set({ filePath: fp, filename, lastModified: new Date() })
+          .where(eq(articles.id, movedFile.articleId));
+        recentlyDeletedFiles.delete(fileHash);
+        win?.webContents.send('data-updated');
+        return;
+      }
+
+      await getDb().insert(articles).values({
+        filename,
+        filePath: fp,
+        addedDate: new Date(),
+        title: filename,
+        fileHash,
+        metadataSource: 'filename'
+      }).onConflictDoNothing();
+      win?.webContents.send('data-updated');
+      processFile(fp).catch(error => console.error('Error in background processing:', error));
+    } catch (error) {
+      console.error('Error adding file to DB:', error);
+    }
+  });
+
+  watcher.on('unlink', async (fp) => {
+    console.log('🗑️ File removed:', fp);
+    try {
+      const [article] = await getDb().select().from(articles).where(eq(articles.filePath, fp));
+      if (article?.fileHash) {
+        recentlyDeletedFiles.set(article.fileHash, {
+          path: fp,
+          articleId: article.id,
+          timestamp: Date.now()
+        });
+        setTimeout(() => {
+          const entry = recentlyDeletedFiles.get(article.fileHash!);
+          if (entry?.articleId === article.id) {
+            getDb().delete(articles).where(eq(articles.id, article.id))
+              .then(() => win?.webContents.send('data-updated'))
+              .catch(console.error);
+            recentlyDeletedFiles.delete(article.fileHash!);
+          }
+        }, MOVE_DETECTION_TIMEOUT);
+      } else {
+        await getDb().delete(articles).where(eq(articles.filePath, fp));
+        win?.webContents.send('data-updated');
+      }
+    } catch (error) {
+      console.error('Error removing file from DB:', error);
+    }
+  });
+
+  watcher.start(rootPath);
+}
+
 app.whenReady().then(async () => {
+  let restoredRootPath: string | null = null;
   try {
     console.log("Starting DB initialization...");
     const start = Date.now();
@@ -835,6 +910,20 @@ app.whenReady().then(async () => {
     const settings = loadSettings();
     console.log(`Loaded settings (Ollama API key configured: ${Boolean(settings.ai.ollamaApiKey)})`);
 
+    restoredRootPath = resolveRestorableRootPath(settings.library.lastRootPath);
+    currentRootPath = restoredRootPath;
+    const restoredFolderPath = resolveRestorableRootPath(settings.library.lastFolderPath);
+    currentFolderPath = restoredRootPath && restoredFolderPath && isPathWithinRoot(restoredFolderPath, restoredRootPath)
+      ? restoredFolderPath
+      : null;
+    if (settings.library.lastRootPath && !restoredRootPath) {
+      console.warn(`Saved library root is unavailable: ${settings.library.lastRootPath}`);
+      saveLibraryLocation(null, null);
+    } else if (settings.library.lastFolderPath && !currentFolderPath) {
+      console.warn(`Saved library folder is unavailable: ${settings.library.lastFolderPath}`);
+      saveLibraryLocation(restoredRootPath, null);
+    }
+
     setChatModel(settings.ai.chatModel);
     setGuideModel(settings.ai.guideModel);
     setOllamaApiKey(settings.ai.ollamaApiKey);
@@ -847,6 +936,7 @@ app.whenReady().then(async () => {
 
   // Create Window after DB is ready
   createWindow();
+  if (restoredRootPath) startRootWatcher(restoredRootPath);
 
   win?.webContents.on('did-finish-load', () => {
      win?.webContents.send('db-ready');
@@ -898,6 +988,25 @@ app.whenReady().then(async () => {
     } catch (e) {
       return { success: false, error: String(e) };
     }
+  });
+
+  ipcMain.handle('get-active-root-folder', () => currentRootPath);
+
+  ipcMain.handle('get-active-library-folder', () => currentFolderPath);
+
+  ipcMain.handle('set-active-library-folder', (_event, folderPath: string | null) => {
+    if (folderPath === null) {
+      currentFolderPath = null;
+      saveLibraryLocation(currentRootPath, null);
+      return { success: true, folderPath: null };
+    }
+    const resolvedFolderPath = resolveRestorableRootPath(folderPath);
+    if (!currentRootPath || !resolvedFolderPath || !isPathWithinRoot(resolvedFolderPath, currentRootPath)) {
+      return { success: false, error: 'The selected folder is unavailable or outside the library root.' };
+    }
+    currentFolderPath = resolvedFolderPath;
+    saveLibraryLocation(currentRootPath, currentFolderPath);
+    return { success: true, folderPath: currentFolderPath };
   });
 
   ipcMain.handle('generate-guidance', async (_event, arg: { filePath: string; force?: boolean }) => {
@@ -1155,7 +1264,8 @@ app.whenReady().then(async () => {
           promptVersion: DIGEST_PROMPT_VERSION,
           ollamaApiKey: submittedApiKey || current.ai.ollamaApiKey
         },
-        ui: update.ui
+        ui: update.ui,
+        library: current.library
       };
       if (nextSettings.ai.provider === 'ollama' && (!nextSettings.ai.ollamaApiKey || !nextSettings.ai.chatModel || !nextSettings.ai.guideModel)) {
         return { success: false, error: 'Ollama Cloud requires an API key and model names.' };
@@ -1183,12 +1293,9 @@ app.whenReady().then(async () => {
     if (!result.canceled && result.filePaths.length > 0) {
       const rootPath = result.filePaths[0];
       currentRootPath = rootPath; // Store the current root path
+      currentFolderPath = null;
       
-      // Stop existing watcher
-      if (watcher) {
-        watcher.stop();
-        watcher.removeAllListeners();
-      }
+      stopRootWatcher();
 
       // Initial scan: find all PDFs and report progress
       const allPDFs = findPdfFilesRecursively(rootPath);
@@ -1280,84 +1387,8 @@ app.whenReady().then(async () => {
       win?.webContents.send('scan-progress', { current: total, total, filename: '', isScanning: false });
       win?.webContents.send('data-updated');
 
-      // Start new watcher
-      watcher = new FileWatcher();
-      watcher.on('add', async (fp) => {
-          console.log("📁 File detected:", fp);
-          try {
-              const filename = path.basename(fp);
-              
-              // Calculate hash to check if this is a moved file
-              const fileHash = await calculateFileHash(fp);
-              
-              // Check if this file was recently deleted (moved file)
-              const movedFile = recentlyDeletedFiles.get(fileHash);
-              if (movedFile && (Date.now() - movedFile.timestamp) < MOVE_DETECTION_TIMEOUT) {
-                  // This is a moved file - update path instead of creating new
-                  console.log(`📦 File moved: ${movedFile.path} -> ${fp}`);
-                  await getDb().update(articles)
-                      .set({ filePath: fp, filename, lastModified: new Date() })
-                      .where(eq(articles.id, movedFile.articleId));
-                  recentlyDeletedFiles.delete(fileHash);
-                  win?.webContents.send('data-updated');
-                  return;
-              }
-              
-              // New file - add to DB
-              await getDb().insert(articles).values({
-                  filename,
-                  filePath: fp,
-                  addedDate: new Date(),
-                  title: filename,
-                  fileHash,
-                  metadataSource: 'filename'
-              }).onConflictDoNothing();
-              win?.webContents.send('data-updated');
-              
-              // Then process for keywords (async, don't block)
-              processFile(fp).catch(err => {
-                console.error('Error in background processing:', err);
-              });
-          } catch (e) {
-              console.error("Error adding file to DB:", e);
-          }
-      });
-      
-      watcher.on('unlink', async (fp) => {
-          console.log("🗑️ File removed:", fp);
-          try {
-             // Get article info before deleting for move detection
-             const [article] = await getDb().select().from(articles).where(eq(articles.filePath, fp));
-             if (article && article.fileHash) {
-                 // Store hash temporarily for move detection
-                 recentlyDeletedFiles.set(article.fileHash, {
-                     path: fp,
-                     articleId: article.id,
-                     timestamp: Date.now()
-                 });
-                 
-                 // Clean up old entries after timeout
-                 setTimeout(() => {
-                     const entry = recentlyDeletedFiles.get(article.fileHash!);
-                     if (entry && entry.articleId === article.id) {
-                         // File was not moved within timeout - actually delete
-                         getDb().delete(articles).where(eq(articles.id, article.id))
-                             .then(() => win?.webContents.send('data-updated'))
-                             .catch(console.error);
-                         recentlyDeletedFiles.delete(article.fileHash!);
-                     }
-                 }, MOVE_DETECTION_TIMEOUT);
-             } else {
-                 // No hash stored - delete immediately
-                 await getDb().delete(articles).where(eq(articles.filePath, fp));
-                 win?.webContents.send('data-updated');
-             }
-          } catch (e) {
-             console.error("Error removing file from DB:", e);
-          }
-      });
-      
-      watcher.start(rootPath);
+      startRootWatcher(rootPath);
+      saveLibraryLocation(rootPath, null);
       
       return rootPath;
     }

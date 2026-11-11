@@ -12,6 +12,7 @@ export class FileWatcher extends EventEmitter {
         this.watcher = watch(rootPath, {
             ignored: /(^|[\/\\])\../, 
             persistent: true,
+            ignoreInitial: true,
             awaitWriteFinish: {
                 stabilityThreshold: 2000,
                 pollInterval: 100

@@ -6,6 +6,7 @@ import { SettingsModal } from '@/components/SettingsModal'
 import { ScanProgress } from '@/components/ScanProgress'
 import { ResizablePanels } from '@/components/ResizablePanels'
 import { GuidanceViewer } from '@/components/GuidanceViewer'
+import { shouldGenerateGuidanceForOpen } from '@/lib/guidance-open'
 import type { DigestStatus, GuidanceBatchState, StartGuidanceBatchResult } from '@/types/guidance'
 
 // Types
@@ -79,16 +80,20 @@ function App() {
 
   const fetchData = useCallback(async () => {
       try {
-          const [articlesData, keywordsData, linksData, settings] = await Promise.all([
+          const [articlesData, keywordsData, linksData, settings, activeRootPath, activeFolderPath] = await Promise.all([
             window.ipcRenderer.invoke('get-articles'),
             window.ipcRenderer.invoke('get-keywords'),
             window.ipcRenderer.invoke('get-all-links'),
-            window.ipcRenderer.invoke('get-settings')
+            window.ipcRenderer.invoke('get-settings'),
+            window.ipcRenderer.invoke('get-active-root-folder'),
+            window.ipcRenderer.invoke('get-active-library-folder')
           ]);
 
           setArticles(articlesData || []);
           setKeywords(keywordsData || []);
           setLinks(linksData || []);
+          setRootPath(typeof activeRootPath === 'string' ? activeRootPath : null);
+          setSelectedFolderPath(typeof activeFolderPath === 'string' ? activeFolderPath : null);
           if (settings?.ui?.markdownTheme) {
             setMarkdownTheme(settings.ui.markdownTheme);
           }
@@ -350,18 +355,12 @@ function App() {
   const handleOpenGuidance = async (article: Article) => {
       try {
           let result = await window.ipcRenderer.invoke('read-guidance', article.filePath);
-          const previousContent = result.success ? result.content : null;
-          if (!result.success || result.status !== 'current') {
+          if (shouldGenerateGuidanceForOpen(result)) {
               setSingleGuidePaths(prev => prev.includes(article.filePath) ? prev : [...prev, article.filePath]);
               try {
                 const generateResult = await window.ipcRenderer.invoke('generate-guidance', { filePath: article.filePath });
                 if (!generateResult.success) {
                     alert("Failed to generate a current digest: " + (generateResult.error || 'Unknown error'));
-                    if (previousContent) {
-                      setGuidanceContent(previousContent);
-                      setGuidanceTitle(`${article.title || article.filename} (previous digest)`);
-                      setCenterTab('guidance');
-                    }
                     return;
                 }
 
@@ -374,7 +373,11 @@ function App() {
 
           if (result.success) {
               setGuidanceContent(result.content);
-              setGuidanceTitle(article.title || article.filename);
+              setGuidanceTitle(
+                result.status === 'current'
+                  ? article.title || article.filename
+                  : `${article.title || article.filename} (previous digest)`
+              );
               setCenterTab('guidance');
           } else {
               alert("Failed to load guidance: " + result.error);
@@ -454,6 +457,16 @@ function App() {
     const path = await window.ipcRenderer.invoke('select-root-folder');
     if (path) {
         setRootPath(path);
+        setSelectedFolderPath(null);
+    }
+  };
+
+  const handleSelectFolderPath = async (folderPath: string | null) => {
+    const result = await window.ipcRenderer.invoke('set-active-library-folder', folderPath);
+    if (result?.success) {
+      setSelectedFolderPath(result.folderPath ?? null);
+    } else {
+      console.error('Failed to save selected library folder:', result?.error);
     }
   };
 
@@ -499,7 +512,7 @@ function App() {
              onOpenSettings={() => setIsSettingsOpen(true)}
              rootPath={rootPath}
              selectedFolderPath={selectedFolderPath}
-             onSelectFolderPath={setSelectedFolderPath}
+             onSelectFolderPath={handleSelectFolderPath}
            />
          }
          centerPanel={
