@@ -9,7 +9,7 @@ interface GuidanceBatchBase {
   failed: number;
   remaining: number;
   errors: Array<{ filePath: string; error: string }>;
-  phase: 'planning' | 'reviewing' | 'queued' | 'extracting' | 'generating' | 'extracting_evidence' | 'merging_evidence' | 'retrying_request' | 'validating' | 'repairing' | 'publishing' | 'cancelling' | 'idle';
+  phase: 'reviewing' | 'queued' | 'extracting' | 'generating' | 'extracting_evidence' | 'merging_evidence' | 'retrying_request' | 'validating' | 'repairing' | 'publishing' | 'cancelling' | 'idle';
   detail: string;
   stopReason: string | null;
 }

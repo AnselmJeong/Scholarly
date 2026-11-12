@@ -43,7 +43,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [guideModel, setGuideModel] = useState('nemotron-3-nano:30b-cloud');
   const [guidePrompt, setGuidePrompt] = useState('');
   const [outputLanguage, setOutputLanguage] = useState<'ko' | 'en'>('ko');
-  const [promptVersion, setPromptVersion] = useState('scholarly-deep-reading-v3');
+  const [promptVersion, setPromptVersion] = useState('scholarly-concise-digest-v4');
   const [ollamaApiKey, setOllamaApiKey] = useState('');
   const [hasOllamaApiKey, setHasOllamaApiKey] = useState(false);
   const [markdownTheme, setMarkdownTheme] = useState<MarkdownTheme>('lapis-dark');
@@ -70,7 +70,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
              setGuideModel(settings.ai.guideModel ?? '');
              setGuidePrompt(settings.ai.guidePrompt || '');
              setOutputLanguage(settings.ai.outputLanguage === 'en' ? 'en' : 'ko');
-             setPromptVersion(settings.ai.promptVersion || 'scholarly-deep-reading-v3');
+             setPromptVersion(settings.ai.promptVersion || 'scholarly-concise-digest-v4');
              setHasOllamaApiKey(settings.ai.hasOllamaApiKey);
           }
           if (settings && settings.ui) {
@@ -277,7 +277,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     />
                     <datalist id="guide-model-options">{modelOptions.map(model => <option key={model} value={model} />)}</datalist>
                     <p className="text-[11px] text-slate-500">
-                        Used for reading plans, Markdown notes, and separate evidence reviews. Longer papers require more requests.
+                        Writes a concise digest, then checks it against the source. Longer papers require extra source checks.
                     </p>
                 </div>
               </div>
@@ -355,7 +355,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 placeholder="Optional tone or emphasis preferences. The structural and grounding contract is always enforced separately."
               />
               <p className="text-[11px] text-slate-500 mt-2">
-                Notes follow paper-type reading questions, an evidence plan, and a separate quality review before saving. This guidance refines tone and emphasis within the {promptVersion} contract.
+                Digests focus on the main argument, evidence, and limitations: about 350–550 Korean eojeol or 600–900 English words. This guidance refines tone and emphasis within the {promptVersion} format.
               </p>
             </div>
           )}

@@ -13,6 +13,7 @@ import {
   classifyArticlePaperType,
   inspectDigestStatus,
   getDigestOutputPath,
+  getDigestReadingBody,
   normalizeGeneratedDigestBody,
   parseDigestDocument,
   publishDigestAtomically,
@@ -61,29 +62,11 @@ ${koreanWords(40)}
 
 # 1. Prerequisite Knowledge
 
-### 1.1 Core concepts
-
-${koreanWords(70)}
-
-### 1.2 Theoretical frameworks
-
-${koreanWords(70)}
-
-### 1.3 Technical vocabulary
-
-${koreanWords(70)}
-
-### 1.4 Methodological background
-
-${koreanWords(70)}
-
-### 1.5 Intellectual lineage
-
-${koreanWords(70)}
+${koreanWords(20)}
 
 # 2. Purpose & Scope
 
-${koreanWords(100)}
+${koreanWords(20)}
 
 # 3. Section-by-Section Digest
 
@@ -97,11 +80,11 @@ ${koreanWords(100)}
 
 # 4. Key Findings & Details
 
-- ${koreanWords(100)}
+- ${koreanWords(20)}
 
 # 5. Integrated Summary
 
-${koreanWords(100)}
+${koreanWords(20)}
 
 # 6. Coverage Map
 
@@ -123,7 +106,7 @@ function extracted(pageCount = 10): ExtractedDocument {
   };
 }
 
-test('Korean body keeps English headers and uses Korean-specific length ranges', () => {
+test('concise Korean body keeps English headers without minimum lengths or five prerequisite subsections', () => {
   const validation = validateDigestBody(validKoreanBody(), makeUnit(), extracted());
   assert.deepEqual(validation, { valid: true, errors: [], warnings: [] });
 });
@@ -158,6 +141,21 @@ test('frontmatter gives ScholarPen a portable link back to the original PDF', ()
   assert.doesNotThrow(() => validatePortableSourceRelpath(frontmatter.source_relpath));
   assert.throws(() => buildDigestFrontmatter(makeUnit({ sourceRelpath: '../../outside.pdf' }), body));
   assert.throws(() => buildDigestFrontmatter(makeUnit({ sourceRelpath: '/absolute/paper.pdf' }), body));
+});
+
+test('reading projects only the body while leaving stored metadata and hashes intact', () => {
+  const body = validKoreanBody();
+  const content = serializeDigest(buildDigestFrontmatter(makeUnit(), body), body);
+  for (const input of [content, content.replace(/\n/g, '\r\n'), '\uFEFF' + content]) {
+    assert.equal(getDigestReadingBody(input), body);
+    assert.doesNotMatch(getDigestReadingBody(input), /schema_version:|source_sha256:|generator_model:/);
+  }
+  assert.equal(parseDigestDocument(content).frontmatter.schema_version, 'scholarly-digest/v1');
+  assert.equal(inspectDigestStatus(content, calculateContractFingerprint(makeUnit())), 'current');
+  const legacy = '# Legacy digest\n\nText.\n\n---\n\nMore text.';
+  assert.equal(getDigestReadingBody(legacy), legacy);
+  const horizontalRule = '---\nOrdinary prose\n---\nMore prose.';
+  assert.equal(getDigestReadingBody(horizontalRule), horizontalRule);
 });
 
 test('invalid output never replaces a valid digest and never publishes a first digest', () => {
@@ -203,15 +201,30 @@ test('page locators outside the supplied unit fail validation', () => {
   assert.ok(validation.errors.some(error => error.includes('outside pages 1-10')));
 });
 
-test('quality targets warn without discarding a grounded complete digest', () => {
-  const conciseBody = validKoreanBody()
-    .replace(`**Key evidence:** ${koreanWords(30)}\n\n`, '')
-    .replace(koreanWords(100), koreanWords(10));
-  const validation = validateDigestBody(conciseBody, makeUnit(), extracted());
+test('plural figure ranges check actual identifiers rather than interpreting Figs as figure s', () => {
+  for (const label of ['Figs. 4–5', 'Figures 4-5', 'Figure 4', 'Fig. 4']) {
+    const body = validKoreanBody().replace('[Source: p. 1]', `[Source: pp. 4–5, ${label}]`);
+    assert.deepEqual(validateDigestBody(body, makeUnit(), extracted()).warnings, []);
+  }
+  const missing = validKoreanBody().replace('[Source: p. 1]', '[Source: pp. 4–5, Figs. 4–99]');
+  const validation = validateDigestBody(missing, makeUnit(), extracted());
+  assert.ok(validation.warnings.some(warning => warning.includes('figure 99')));
+  assert.ok(!validation.warnings.some(warning => warning.includes('figure s')));
+});
+
+test('long digests warn without rejecting or truncating valid content', () => {
+  const verboseBody = validKoreanBody().replace(koreanWords(40), koreanWords(700));
+  const validation = validateDigestBody(verboseBody, makeUnit(), extracted());
   assert.equal(validation.valid, true);
   assert.deepEqual(validation.errors, []);
-  assert.ok(validation.warnings.some(warning => warning.includes('Key evidence')));
-  assert.ok(validation.warnings.some(warning => warning.includes('target')));
+  assert.ok(validation.warnings.some(warning => warning.includes('concise target')));
+});
+
+test('short entries need no three-part labels, but required sections cannot be empty', () => {
+  const conciseBody = validKoreanBody().replace(/\*\*(?:Main content|Key evidence|Connection):\*\* /g, '');
+  assert.deepEqual(validateDigestBody(conciseBody, makeUnit(), extracted()), { valid: true, errors: [], warnings: [] });
+  const empty = conciseBody.replace(/(# 1\. Prerequisite Knowledge)[\s\S]*?(# 2\. Purpose)/, '$1\n\n$2');
+  assert.equal(validateDigestBody(empty, makeUnit(), extracted()).valid, false);
 });
 
 test('harmless Markdown wrappers and heading levels are normalized before validation', () => {
@@ -220,6 +233,26 @@ test('harmless Markdown wrappers and heading levels are normalized before valida
   assert.match(normalized, /^# 0\. Snapshot/m);
   assert.doesNotMatch(normalized, /```/);
   assert.equal(validateDigestBody(normalized, makeUnit(), extracted()).valid, true);
+});
+
+test('ordinary entry formatting survives final validation and atomic publication', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarly-format-test-'));
+  const unit = makeUnit();
+  try {
+    for (const title of ['**Introduction —** ', '**Introduction** — ', '**Introduction –**\n', '**Introduction**  \n', '### Introduction\n', '## Introduction\n', '']) {
+      const body = validKoreanBody().replace('**Introduction —**\n\n**Main content:** ', title);
+      const validation = validateDigestBody(body, unit, extracted());
+      assert.equal(validation.valid, true, validation.errors.join(' | '));
+      const complete = serializeDigest(buildDigestFrontmatter(unit, body), body);
+      const target = path.join(directory, 'summary', 'paper.md');
+      publishDigestAtomically(target, complete, unit, extracted());
+      assert.equal(inspectDigestStatus(fs.readFileSync(target, 'utf8'), calculateContractFingerprint(unit)), 'current');
+      const badLocator = body.replace('[Source: p. 1]', '[Source: p. 99]');
+      assert.equal(validateDigestBody(badLocator, unit, extracted()).valid, false);
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('PDF prompt injection remains escaped user data and cannot replace the system contract', () => {

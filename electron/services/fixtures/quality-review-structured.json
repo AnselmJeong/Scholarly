@@ -1,0 +1,20 @@
+{
+  "passed": false,
+  "findings": [
+    {
+      "passage": "Key Findings & Details 첫 글머리표: “혼돈성은 너무 높거나 너무 낮은 경우 모두 인지적 유연성 저하로 이어질 수 있다고 제안한다.”",
+      "source_page": "p. 4 (Table 1), p. 7",
+      "issue": "Table 1에서 ‘Reduced Cognitive Flexibility’는 ‘Too low chaoticity’에만 대응된다. ‘Too high chaoticity’는 ‘Increased Variability in Affective States, Disorganized Thought, High Distractibility’로 제시되며, 본문에서도 높은 혼돈성은 주의력 문제·산만함과 연결된다.",
+      "correction": "“혼돈성이 너무 낮으면 인지적 유연성 저하와, 너무 높으면 정동 변동성 증가·사고 분열·높은 산만함과 관련될 수 있다고 제안한다.”로 수정할 것."
+    }
+  ],
+  "warnings": [
+    "치료 함의의 ‘주 단위의 자기보고 평균’은 원문의 ‘weeks to months’보다 좁다. ‘수주에서 수개월 단위’로 완화하는 것이 정확하다.",
+    "우울증 모델의 ‘전측 대상피질’은 원문의 ventral anterior cingulate cortex(vACC)를 가리키므로 ‘복측 전측 대상피질’로 명시하는 것이 좋다.",
+    "‘이 매핑들은 현상학적 유사성에 주로 의존한다’는 표현은 원문이 인용하는 전기생리학·심박변동성 등 경험적 단서를 과소평가할 수 있다. ‘일부 매핑은 현상학적 유사성에 의존하며 기전 해석은 가설적이다’로 완화하는 것이 안전하다."
+  ],
+  "sourceAssessment": {
+    "fullTextAvailable": true,
+    "rationale": "주요 본문이 서론부터 결론과 저자 정보까지 제공되어 논지와 근거를 검토하기에 충분하다. 보충자료와 참고문헌 목록은 포함되지 않았으나 핵심 논증 검토에는 필수적이지 않다."
+  }
+}

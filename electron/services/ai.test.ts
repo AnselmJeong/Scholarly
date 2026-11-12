@@ -7,6 +7,61 @@ import path from 'node:path';
 
 const messages = [{ role: 'user' as const, content: 'test' }];
 
+test('cloud requests impose no output token cap and accept complete answers beyond the former ceiling', async () => {
+  const originalFetch = globalThis.fetch;
+  setOllamaApiKey('test-key');
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    assert.equal(Object.prototype.hasOwnProperty.call(body, 'max_tokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(body, 'max_completion_tokens'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(body, 'stop'), false);
+    assert.deepEqual(body.messages, messages);
+    return Response.json({
+      choices: [{ message: { content: 'complete final answer', reasoning: 'internal reasoning' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 10, completion_tokens: 100_000, total_tokens: 100_010 }
+    });
+  };
+  try {
+    const result = await requestChat(messages, 'thinking-model');
+    assert.equal(result.content, 'complete final answer');
+    assert.equal(result.usage?.completionTokens, 100_000);
+    assert.equal(result.requestAttempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    setOllamaApiKey('');
+  }
+});
+
+test('server-truncated responses fail before returning partial text or valid-looking JSON', async () => {
+  const originalFetch = globalThis.fetch;
+  setOllamaApiKey('test-key');
+  try {
+    for (const content of ['', 'partial note', '{"passed":true,"findings":[]}']) {
+      let calls = 0;
+      globalThis.fetch = async () => {
+        calls++;
+        return Response.json({
+          choices: [{ message: { content, reasoning_content: 'internal reasoning' }, finish_reason: 'length' }],
+          usage: { prompt_tokens: 10, completion_tokens: 100_000, total_tokens: 100_010 }
+        });
+      };
+      await assert.rejects(requestChat(messages, 'thinking-model', { retryDelayMs: 0 }), error => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /model: thinking-model; finish reason: length; completion tokens: 100000/);
+        assert.match(error.message, /Scholarly sent no output token cap/);
+        assert.match(error.message, /No incomplete answer was accepted/);
+        assert.doesNotMatch(error.message, /internal reasoning/);
+        return true;
+      });
+      // An identical uncapped retry cannot raise the server's own limit.
+      assert.equal(calls, 1);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    setOllamaApiKey('');
+  }
+});
+
 test('chat request retries an empty transient response and returns completion diagnostics', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

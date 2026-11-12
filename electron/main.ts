@@ -7,6 +7,8 @@ import { initDB, getDb } from './db/index'
 import { FileWatcher } from './services/watcher'
 import { checkAIStatus, setProviderConnection, listModels, setModel, chatWithPaper, setChatModel, setGuideModel, setOllamaApiKey, generateGuidance } from './services/ai'
 import type { ChatCompletionUsage, DigestGenerationPhase } from './services/ai'
+import { ReadingFailureError } from './services/reading'
+import type { ReadingRunDiagnostic } from './services/reading'
 import { loadSettings, saveSettings, saveLibraryLocation, getDefaultGuidePrompt } from './store'
 import type { AppSettings, SettingsUpdate } from './store'
 import { articles, keywords, articleKeywords } from './db/schema'
@@ -28,6 +30,7 @@ import {
   getDigestOutputPath,
   normalizeGeneratedDigestBody,
   parseDigestDocument,
+  getDigestReadingBody,
   publishDigestAtomically,
   serializeDigest,
   shouldStopDigestBatch,
@@ -119,6 +122,7 @@ interface DigestFailureDiagnostic {
   failedAt: string;
   expectedFingerprint: string;
   attempts?: DigestAttemptDiagnostic[];
+  readingDiagnostic?: ReadingRunDiagnostic;
 }
 
 const sourceShaCache = new Map<string, { size: number; mtimeMs: number; sha256: string }>();
@@ -158,7 +162,7 @@ function saveDigestDiagnostics(): void {
   const diagnosticsPath = digestDiagnosticsPath();
   const temporaryPath = `${diagnosticsPath}.${crypto.randomUUID()}.tmp`;
   fs.mkdirSync(path.dirname(diagnosticsPath), { recursive: true });
-  fs.writeFileSync(temporaryPath, JSON.stringify(Array.from(digestFailureDiagnostics.values()), null, 2), 'utf8');
+  fs.writeFileSync(temporaryPath, JSON.stringify(Array.from(digestFailureDiagnostics.values()), null, 2), { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(temporaryPath, diagnosticsPath);
 }
 
@@ -166,7 +170,8 @@ function recordDigestFailure(
   filePath: string,
   error: string,
   expectedFingerprint: string,
-  attempts: DigestAttemptDiagnostic[] = []
+  attempts: DigestAttemptDiagnostic[] = [],
+  readingDiagnostic?: ReadingRunDiagnostic
 ): void {
   try {
     loadDigestDiagnostics();
@@ -175,7 +180,8 @@ function recordDigestFailure(
       error,
       failedAt: new Date().toISOString(),
       expectedFingerprint,
-      attempts
+      attempts,
+      ...(readingDiagnostic ? { readingDiagnostic } : {})
     });
     saveDigestDiagnostics();
   } catch (diagnosticError) {
@@ -384,6 +390,10 @@ async function ensureGuidanceForPdf(
       if (!completion.readingAudit || completion.readingAudit.finalBodySha256 !== sha256(body)) {
         throw new Error('A passing quality review for this exact note is required before saving.');
       }
+      const finalBodySha256 = completion.readingAudit.finalBodySha256;
+      bodyValidation.warnings.push(...new Set(completion.readingAudit.reviews
+        .filter(review => review.bodySha256 === finalBodySha256)
+        .flatMap(review => review.warnings)));
       const frontmatter = buildDigestFrontmatter(sourceUnit, body);
       const completeDigest = serializeDigest(frontmatter, body);
       options.onProgress?.('publishing', 'Publishing validated digest');
@@ -417,7 +427,8 @@ async function ensureGuidanceForPdf(
       return { success: false, cancelled: true, error: 'Digest generation cancelled.' };
     }
     const message = error instanceof Error ? error.message : String(error);
-    recordDigestFailure(filePath, message, expectedFingerprint, attempts);
+    recordDigestFailure(filePath, message, expectedFingerprint, attempts,
+      error instanceof ReadingFailureError ? error.diagnostic : undefined);
     return { success: false, status: 'failed', error: message };
   } finally {
     activeDigestRuns -= 1;
@@ -981,7 +992,7 @@ app.whenReady().then(async () => {
       const status = await getDigestStatusForPdf(filePath);
       if (fs.existsSync(summaryPath)) {
           const content = fs.readFileSync(summaryPath, 'utf8');
-          return { success: true, content, status };
+          return { success: true, content: getDigestReadingBody(content), status };
       }
       const diagnostic = digestFailureDiagnostics.get(filePath);
       return { success: false, status, error: diagnostic?.error || 'Digest file not found' };
