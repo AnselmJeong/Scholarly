@@ -5,8 +5,15 @@ use crate::{
 };
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use pulldown_cmark::{Event, Options, Parser, Tag, html};
-use std::{collections::HashSet, fs, path::Path};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
+use std::{collections::HashSet, fs, ops::Range, path::Path};
+
+fn markdown_options() -> Options {
+    Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_MATH
+}
 
 pub(crate) fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -17,14 +24,7 @@ pub(crate) fn escape(text: &str) -> String {
 }
 pub(crate) fn markup(body: &str) -> String {
     let body = reader_format::display_body(body);
-    let parser = Parser::new_ext(
-        &body,
-        Options::ENABLE_TABLES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_MATH,
-    )
-    .map(|event| match event {
+    let parser = Parser::new_ext(&body, markdown_options()).map(|event| match event {
         Event::Html(text) | Event::InlineHtml(text) => Event::Text(text),
         Event::InlineMath(text) => Event::Html(
             format!(
@@ -109,59 +109,145 @@ fn visual(asset: &Asset) -> Result<String> {
         contents
     ))
 }
-pub(crate) fn content(body: &str, assets: &[Asset]) -> Result<String> {
-    let mut html = String::new();
-    let mut pending = String::new();
-    let mut shown = HashSet::new();
-    for paragraph in body.split("\n\n") {
-        let references = source_visuals::references(paragraph);
-        let matching: Vec<_> = assets
-            .iter()
-            .filter(|a| {
-                references.contains(&(a.visual.kind.clone(), a.visual.number.clone()))
-                    && !shown.contains(&a.visual.label)
-            })
-            .collect();
-        if matching.is_empty() || paragraph.trim_start().starts_with('#') {
-            pending.push_str(paragraph);
-            pending.push_str("\n\n");
-            continue;
-        }
-        html.push_str(&markup(&pending));
-        pending.clear();
-        // Full-width plots/tables need the whole reading column. Small crops may sit
-        // beside prose only when there is enough width (CSS switches at 800 px).
-        if matching.len() == 1
-            && matching[0].visual.cropped
-            && matching[0].visual.kind == "figure"
-            && matching[0].visual.rect[2] < 0.55
-        {
-            html.push_str("<section class=\"visual visual-pair\">");
-            html.push_str(&visual(matching[0])?);
-            html.push_str(&format!(
-                "<div class=\"explanation\">{}</div></section>",
-                markup(paragraph)
-            ));
-        } else {
-            html.push_str(&markup(paragraph));
-            for asset in &matching {
-                html.push_str(&format!(
-                    "<section class=\"visual\">{}</section>",
-                    visual(asset)?
-                ));
+// Associate verified source numbers with explanatory prose, not headings, code,
+// tables, result lists, or the coverage inventory. Keep original Markdown ranges
+// so inserting a visual never splits a fenced block, equation, or nested list.
+struct Explanation {
+    range: Range<usize>,
+    references: Vec<(String, String)>,
+    overview: bool,
+}
+
+fn explanations(body: &str) -> Vec<Explanation> {
+    let mut result = Vec::new();
+    let mut sections = Vec::<(u8, u8)>::new();
+    let mut nested = 0;
+    for (event, range) in Parser::new_ext(body, markdown_options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                let level = level as u8;
+                while sections.last().is_some_and(|(l, _)| *l >= level) {
+                    sections.pop();
+                }
+                let title = body[range].to_lowercase();
+                let role = if [
+                    "coverage map",
+                    "읽은 범위",
+                    "참고문헌",
+                    "references",
+                    "목차",
+                    "contents",
+                ]
+                .iter()
+                .any(|t| title.contains(t))
+                {
+                    2
+                } else if [
+                    "snapshot",
+                    "한눈에 보기",
+                    "key findings",
+                    "핵심 결과",
+                    "integrated summary",
+                    "종합 이해",
+                ]
+                .iter()
+                .any(|t| title.contains(t))
+                {
+                    1
+                } else {
+                    0
+                };
+                sections.push((level, role));
             }
+            Event::Start(Tag::List(_) | Tag::BlockQuote(_) | Tag::FootnoteDefinition(_)) => {
+                nested += 1
+            }
+            Event::End(TagEnd::List(_) | TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition) => {
+                nested -= 1
+            }
+            Event::Start(Tag::Paragraph)
+                if nested == 0 && !sections.iter().any(|(_, role)| *role == 2) =>
+            {
+                let references = source_visuals::references(&body[range.clone()]);
+                if !references.is_empty() {
+                    result.push(Explanation {
+                        range,
+                        references,
+                        overview: sections.iter().any(|(_, role)| *role == 1),
+                    });
+                }
+            }
+            _ => {}
         }
-        for asset in matching {
+    }
+    result
+}
+
+pub(crate) fn content(body: &str, assets: &[Asset]) -> Result<String> {
+    let paragraphs = explanations(body);
+    let mut groups = vec![Vec::new(); paragraphs.len()];
+    let mut shown = HashSet::new();
+    for asset in assets {
+        let key = (asset.visual.kind.clone(), asset.visual.number.clone());
+        // Detailed explanation wins over the opening synopsis. A reference to a
+        // single visual wins over a broad range; equal candidates keep reading order.
+        let best = paragraphs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.references.contains(&key))
+            .min_by_key(|(i, p)| {
+                (
+                    p.overview,
+                    p.references
+                        .iter()
+                        .filter(|(kind, _)| kind == &key.0)
+                        .count(),
+                    *i,
+                )
+            });
+        if let Some((i, _)) = best {
+            groups[i].push(asset);
             shown.insert(asset.visual.label.clone());
         }
     }
-    html.push_str(&markup(&pending));
+    let mut html = String::new();
+    let mut previous = 0;
+    for (paragraph, matching) in paragraphs.iter().zip(groups) {
+        if matching.is_empty() {
+            continue;
+        }
+        html.push_str(&markup(&body[previous..paragraph.range.start]));
+        let (figures, other): (Vec<_>, Vec<_>) = matching
+            .into_iter()
+            .partition(|a| a.visual.cropped && a.visual.kind == "figure");
+        let explanation = markup(&body[paragraph.range.clone()]);
+        if figures.is_empty() {
+            html.push_str(&explanation);
+        } else {
+            // Prose comes first in both reading and keyboard order. CSS places
+            // the figures beside it, or immediately below in a narrow pane.
+            html.push_str(&format!("<section class=\"visual visual-pair\"><div class=\"explanation\">{explanation}</div><div class=\"visual-figures\">"));
+            for asset in figures {
+                html.push_str(&visual(asset)?);
+            }
+            html.push_str("</div></section>");
+        }
+        // Tables retain the full reading width; continued table pages stay together.
+        for asset in other {
+            html.push_str(&format!(
+                "<section class=\"visual\">{}</section>",
+                visual(asset)?
+            ));
+        }
+        previous = paragraph.range.end;
+    }
+    html.push_str(&markup(&body[previous..]));
     let remaining: Vec<_> = assets
         .iter()
         .filter(|a| !shown.contains(&a.visual.label))
         .collect();
     if !remaining.is_empty() {
-        html.push_str("<details class=\"visual-gallery\"><summary>원문의 그림과 표 더 보기</summary><p class=\"source-note\">본문에 번호가 명시되지 않은 자료입니다. 원문 캡션과 함께 확인할 수 있습니다.</p>");
+        html.push_str("<details class=\"visual-gallery\"><summary>원문의 그림과 표 더 보기</summary><p class=\"source-note\">본문에서 설명 위치를 확인하지 못한 자료입니다. 원문 캡션과 함께 확인할 수 있습니다.</p>");
         for asset in remaining {
             html.push_str(&format!(
                 "<section class=\"visual\">{}</section>",

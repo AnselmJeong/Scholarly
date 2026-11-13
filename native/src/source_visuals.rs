@@ -108,7 +108,11 @@ pub(crate) fn extract(pdf: &Path, home: &Path) -> Result<Vec<Asset>> {
 /// Exact labels, including supplementary labels. Never pair Figure 1 with Table 1.
 pub(crate) fn references(text: &str) -> Vec<(String, String)> {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)(?:\b(fig(?:ure)?s?\.?|tables?)|\b(그림|표))\s*([sS]?\d+)(?:[a-h])?(?:\s*[-–]\s*([sS]?\d+))?").unwrap()
+        let item = r"[sS]?\d+(?:[a-h])?(?:\s*[-–]\s*[sS]?\d+(?:[a-h])?)?";
+        regex::Regex::new(&format!(r"(?i)(?:\b(fig(?:ure)?s?\.?|tables?)|\b(그림|표))\s*({item}(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|&)\s+|\s*(?:및|와|과)\s*){item})*)")).unwrap()
+    });
+    static ITEM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)([sS]?\d+)(?:[a-h])?(?:\s*[-–]\s*([sS]?\d+)(?:[a-h])?)?").unwrap()
     });
     let mut found = Vec::new();
     for c in RE.captures_iter(text) {
@@ -123,21 +127,26 @@ pub(crate) fn references(text: &str) -> Vec<(String, String)> {
         } else {
             "figure"
         };
-        let start = c[3].to_uppercase();
-        found.push((kind.to_owned(), start.clone()));
-        if let Some(end) = c.get(4) {
-            let prefix = if start.starts_with('S') { "S" } else { "" };
-            if let (Ok(a), Ok(b)) = (
-                start.trim_start_matches('S').parse::<u32>(),
-                end.as_str().trim_start_matches(['S', 's']).parse::<u32>(),
-            ) && b > a
-                && b - a < 20
-            {
-                for n in a + 1..=b {
-                    found.push((kind.into(), format!("{prefix}{n}")));
+        for item in ITEM.captures_iter(&c[3]) {
+            let start = item[1].to_uppercase();
+            found.push((kind.to_owned(), start.clone()));
+            if let Some(end) = item.get(2) {
+                let prefix = if start.starts_with('S') { "S" } else { "" };
+                if let (Ok(a), Ok(b)) = (
+                    start.trim_start_matches('S').parse::<u32>(),
+                    end.as_str().trim_start_matches(['S', 's']).parse::<u32>(),
+                ) && b > a
+                    && b - a < 20
+                    && (!end.as_str().to_uppercase().starts_with('S') || prefix == "S")
+                {
+                    for n in a + 1..=b {
+                        found.push((kind.into(), format!("{prefix}{n}")));
+                    }
                 }
             }
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|key| seen.insert(key.clone()));
     found
 }

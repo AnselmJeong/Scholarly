@@ -418,3 +418,80 @@ fn automatic_visuals_match_exact_kind_number_and_keep_table_continuations() {
         ]
     );
 }
+
+#[test]
+fn figures_follow_explanations_instead_of_overviews_or_coverage() {
+    use crate::source_visuals::{Asset, Visual};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("figure.png");
+    fs::write(&path, b"png").unwrap();
+    let assets = ["1", "2", "3", "10", "S1"].map(|number| Asset {
+        path: path.clone(),
+        visual: Visual {
+            kind: "figure".into(),
+            number: number.into(),
+            label: format!("Figure {number}"),
+            page: 3,
+            caption: "Original caption".into(),
+            rect: [0., 0., 0.98, 0.7],
+            cropped: true,
+        },
+    });
+    let body = "# 0. Snapshot\n\nQuick overview [Fig. 1].\n\n# 3. Section-by-Section Digest\n## Results\nGeneral comparison [Figs. 1, 2 and 3].\n\nSpecific mechanism explained here [Fig. 1].\n\n```text\nFigure 10\n\nCode stays intact.\n```\n\n- Inventory Figure S1\n\n> Quoted Figure 10\n\n# 6. Coverage Map\n## Captions\nFigures 1–3, 10 and S1 were read.\n";
+    let content = crate::reader_html::content(body, &assets).unwrap();
+    let pairs: Vec<_> = content
+        .split("class=\"visual visual-pair\"")
+        .skip(1)
+        .map(|s| s.split("</section>").next().unwrap())
+        .collect();
+    assert_eq!(pairs.len(), 2);
+    assert!(pairs[0].contains("General comparison"));
+    assert!(pairs[0].contains("data-visual=\"Figure 2\""));
+    assert!(pairs[0].contains("data-visual=\"Figure 3\""));
+    assert!(!pairs[0].contains("data-visual=\"Figure 1\""));
+    assert!(pairs[1].contains("Specific mechanism"));
+    assert!(pairs[1].contains("data-visual=\"Figure 1\""));
+    assert!(pairs[1].find("Specific mechanism").unwrap() < pairs[1].find("<figure").unwrap());
+    assert_eq!(content.matches("data-visual=\"Figure 1\"").count(), 1);
+    let gallery = content.find("class=\"visual-gallery\"").unwrap();
+    for label in ["10", "S1"] {
+        assert!(
+            content
+                .find(&format!("data-visual=\"Figure {label}\""))
+                .unwrap()
+                > gallery
+        );
+    }
+    assert!(content.contains("Figure 10\n\nCode stays intact.\n</code></pre>"));
+    assert!(content.contains("<h2>Results</h2>"));
+    // A synopsis is still useful when it is the only actual explanation.
+    let overview =
+        crate::reader_html::content("# 한눈에 보기\n\nFigure 1 explains the result.", &assets)
+            .unwrap();
+    assert_eq!(overview.matches("class=\"visual visual-pair\"").count(), 1);
+}
+
+#[test]
+fn visual_reference_lists_preserve_number_kind_and_supplement() {
+    let actual = crate::source_visuals::references(
+        "Figs. 1, 2 and 3; Table 1; 그림 4와 5; 표 2 및 3; Figures S1–S3; Fig. 1, Fig. 10.",
+    );
+    let expected = [
+        ("figure", "1"),
+        ("figure", "2"),
+        ("figure", "3"),
+        ("table", "1"),
+        ("figure", "4"),
+        ("figure", "5"),
+        ("table", "2"),
+        ("table", "3"),
+        ("figure", "S1"),
+        ("figure", "S2"),
+        ("figure", "S3"),
+        ("figure", "10"),
+    ];
+    assert_eq!(
+        actual,
+        expected.map(|(kind, number)| (kind.to_string(), number.to_string()))
+    );
+}

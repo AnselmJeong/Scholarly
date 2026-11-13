@@ -11,7 +11,7 @@ Rust + GPUI Kit로 만든 macOS arm64 앱이다. Electron·Chromium·Node·Pytho
 - 현재 폴더의 없는 노트 작성 또는 전체 재작성 계획, 최대 두 편 동시 처리, 진행 기록 저장과 재개.
 - 원문 대조와 본문·원문 해시에 연결된 대조 결과, 논문 질문·대화 기록.
 - 선택·복사 가능한 HTML 본문·비교표, KaTeX 블록/인라인 수식, 본문 크기 조절, 밝은/어두운 화면.
-- 원문의 그림·표를 번호와 캡션으로 찾아 개별 영역으로 자동 추출하고, 해당 번호를 설명하는 문단에 배치. 클릭 확대·축소, 원문 쪽 열기, 여러 쪽에 걸친 표 지원. 기존 수동 크롭도 보존.
+- 원문의 그림·표를 번호와 캡션으로 찾아 개별 영역으로 자동 추출하고, 그림은 해당 번호를 설명하는 본문 문단 옆에, 표는 문단 아래에 넓게 배치. 좁은 읽기 폭·큰 글자에서는 그림도 설명 바로 아래로 이동. 클릭 확대·축소, 원문 쪽 열기, 여러 쪽에 걸친 표 지원. 기존 수동 크롭도 보존.
 - 이미지와 수식을 포함하는 독립 HTML, 현재 목록 BibTeX, 논문 PDF·노트·그림·서지정보 ZIP.
 - 논문 정보 편집, DOI로 Crossref 정보 조회 후 확인·저장.
 
@@ -19,7 +19,7 @@ Rust + GPUI Kit로 만든 macOS arm64 앱이다. Electron·Chromium·Node·Pytho
 
 ## 빌드와 실행
 
-현재 버전은 **0.10.2 (build 12)**이다. Rust 1.99.0, Python 3.11 이상, Xcode Command Line Tools가 필요하다. Typst 설치는 필요하지 않다. `Cargo.lock`을 포함한다. 저장소 루트에서:
+현재 버전은 **0.10.3 (build 13)**이다. Rust 1.99.0, Python 3.11 이상, Xcode Command Line Tools가 필요하다. Typst 설치는 필요하지 않다. `Cargo.lock`을 포함한다. 저장소 루트에서:
 
 ```sh
 cargo +1.99.0 test --manifest-path native/Cargo.toml
@@ -50,6 +50,8 @@ swiftc -O native/platform/reader-check.swift -o native/target/reader-check
 Codex·Claude 자격증명은 공식 CLI의 저장소를 그대로 사용한다. 기존 Electron의 암호화된 Ollama API 키를 임의 해독하지 않는다. 필요한 경우 설정에서 키를 입력하면 해당 서버 주소별 macOS Keychain 항목으로 저장한다. 다른 제공자나 API 과금 경로로 자동 전환하지 않는다.
 
 ## 검증 상태와 제한
+
+0.10.3의 [문단 옆 그림 배치 검증](../docs/evaluation/2026-11-14-adjacent-figures.md)은 Rust 검사 13개와 실제 논문 7편의 26개 설명 묶음·30개 그림을 포함한다. 780px·420px·큰 글자 상태를 확인했다.
 
 0.10.2의 검증 결과와 재현 명령은 [HTML 읽기 화면 평가](../docs/evaluation/2026-11-14-html-reader.md)에 있다. Rust 회귀 검사 11개, Clippy, 합성 PDF의 추출 경계 검사, 실제 논문 7편의 HTML·수식·그림·표 검사를 수행했다. 이전 생성 품질·속도·데이터 이관 검증은 [학습 노트 평가](../docs/evaluation/2026-11-13-learning-native.md)에 별도로 보존한다.
 

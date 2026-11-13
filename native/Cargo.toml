@@ -1,11 +1,11 @@
 [package]
 name = "scholarly-native"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 publish = false
 
 [package.metadata.bundle]
-build-number = 12
+build-number = 13
 
 [dependencies]
 gpui-kit = "=0.9.1"
