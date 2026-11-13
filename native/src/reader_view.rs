@@ -11,7 +11,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, ElementExt, Selectable, Sizable,
     button::Button,
     input::{Input, InputState, Textarea, TextareaState},
-    text::{MarkdownExtensions, TextView, TextViewStyle},
+    text::{MarkdownExtensions, TextView},
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -35,14 +35,8 @@ struct Loaded {
     review: String,
 }
 enum Update {
-    Loaded(i64, u64, Result<Loaded, String>),
-    Prepared(
-        i64,
-        u64,
-        MarkdownExtensions,
-        Vec<figures::Block>,
-        Vec<String>,
-    ),
+    Loaded(i64, u64, Result<Box<Loaded>, String>),
+    Prepared(i64, u64, Result<String, String>),
     Text(i64, String),
     Status(i64, String),
     Finished(i64, Result<String, String>),
@@ -50,6 +44,7 @@ enum Update {
     Metadata(i64, Result<crate::metadata::Metadata, String>),
 }
 pub(crate) struct ReaderView {
+    html: Option<crate::html_surface::HtmlSurface>,
     home: PathBuf,
     settings: Settings,
     article: Option<Article>,
@@ -129,6 +124,7 @@ impl ReaderView {
             async {}
         });
         Self {
+            html: crate::html_surface::HtmlSurface::new(window).ok(),
             load_epoch: 0,
             blocks: vec![],
             saved_notes: String::new(),
@@ -181,6 +177,11 @@ impl ReaderView {
             page_image: None,
             page_loading: false,
             loaded_at: std::time::Instant::now(),
+        }
+    }
+    pub(crate) fn hide_html(&self) {
+        if let Some(html) = &self.html {
+            html.hide();
         }
     }
     pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
@@ -276,19 +277,30 @@ impl ReaderView {
             let _ = sender.send(Update::Loaded(
                 article.id,
                 epoch,
-                result.map_err(|e| e.to_string()),
+                result.map(Box::new).map_err(|e| e.to_string()),
             ));
             if let Some(body) = body {
-                let (extensions, warnings) = reader_format::prepare(&body, &home);
-                let blocks = figures::blocks(&body, &article.path)
-                    .unwrap_or_else(|_| vec![figures::Block::Text(body)]);
-                let _ = sender.send(Update::Prepared(
-                    article.id, epoch, extensions, blocks, warnings,
-                ));
+                let html = crate::reader_html::prepare(&body, &article.path, &home)
+                    .map_err(|e| e.to_string());
+                let _ = sender.send(Update::Prepared(article.id, epoch, html));
             }
         });
     }
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let messages = self.html.as_mut().map(|h| h.messages()).unwrap_or_default();
+        for message in messages {
+            if let Some(page) = message["page"].as_u64().filter(|p| *p > 0 && *p < 10000) {
+                self.page = page as usize;
+                self.source_visible = true;
+                self.source_page(cx);
+            }
+            if let Some(url) = message["url"]
+                .as_str()
+                .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+            {
+                cx.open_url(url);
+            }
+        }
         let mut changed = false;
         let mut latest_text = None;
         while let Ok(event) = self.receiver.try_recv() {
@@ -300,7 +312,11 @@ impl ReaderView {
                 {
                     match result {
                         Ok(loaded) => {
+                            let loaded = *loaded;
                             self.body = loaded.body.into();
+                            if let Some(html) = &mut self.html {
+                                html.set_content(id, crate::reader_html::markup(&self.body));
+                            }
                             self.status = if self.notice.is_empty() {
                                 loaded.status
                             } else {
@@ -322,15 +338,19 @@ impl ReaderView {
                         Err(e) => self.status = e,
                     }
                 }
-                Update::Prepared(id, epoch, extensions, blocks, warnings)
+                Update::Prepared(id, epoch, result)
                     if epoch == self.load_epoch
                         && self.article.as_ref().is_some_and(|a| a.id == id) =>
                 {
-                    self.extensions = extensions;
-                    self.blocks = blocks;
-                    if !warnings.is_empty() {
-                        self.status
-                            .push_str(" · 일부 수식은 원문 표기로 표시됩니다");
+                    match result {
+                        Ok(content) => {
+                            if let Some(html) = &mut self.html {
+                                html.set_content(id, content);
+                            }
+                        }
+                        Err(error) => self
+                            .status
+                            .push_str(&format!(" · 그림·표 자동 표시: {error}")),
                     }
                 }
                 Update::Text(id, text) if self.article.as_ref().is_some_and(|a| a.id == id) => {
@@ -403,6 +423,12 @@ impl ReaderView {
             } else {
                 self.blocks.clear();
                 self.body = text.into();
+                if let Some(html) = &mut self.html {
+                    html.set_content(
+                        self.article.as_ref().map_or(0, |a| a.id),
+                        crate::reader_html::markup(&self.body),
+                    );
+                }
             }
         }
         if self.loaded_article == self.article.as_ref().map(|a| a.id)
@@ -746,112 +772,13 @@ impl ReaderView {
         });
         cx.notify();
     }
-    fn note_style(&self) -> TextViewStyle {
-        let mut style = TextViewStyle::default()
-            .paragraph_gap(rems(1.05))
-            .heading_font_size(|level, base| {
-                base * match level {
-                    1 => 1.85,
-                    2 => 1.4,
-                    3 => 1.2,
-                    _ => 1.05,
-                }
-            });
-        style.heading_base_font_size = px(self.font_size);
-        style
-    }
-    fn note_content(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.blocks.is_empty() {
-            return TextView::markdown("learning-note", reader_format::display_body(&self.body))
-                .markdown_extensions(self.extensions.clone())
-                .style(self.note_style())
-                .selectable(true)
-                .on_link_click(|url, _, _, cx| {
-                    if url.starts_with("https://") || url.starts_with("http://") {
-                        cx.open_url(url);
-                    }
-                })
-                .into_any_element();
-        }
+    fn note_content(&self, _cx: &mut Context<Self>) -> AnyElement {
         div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .children(self.blocks.iter().enumerate().map(|(ix, block)| {
-                match block {
-                    figures::Block::Text(text) => {
-                        TextView::markdown(("note-part", ix), reader_format::display_body(text))
-                            .markdown_extensions(self.extensions.clone())
-                            .style(self.note_style())
-                            .selectable(true)
-                            .on_link_click(|url, _, _, cx| {
-                                if url.starts_with("https://") || url.starts_with("http://") {
-                                    cx.open_url(url);
-                                }
-                            })
-                            .into_any_element()
-                    }
-                    figures::Block::Figure(f, path, context) => div()
-                        .flex()
-                        .flex_wrap()
-                        .items_start()
-                        .gap_6()
-                        .my_4()
-                        .pl_4()
-                        .border_l_2()
-                        .border_color(cx.theme().primary)
-                        .child(
-                            div()
-                                .w(rems(20.))
-                                .max_w_full()
-                                .flex_shrink_0()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .aspect_ratio(f.aspect_ratio)
-                                        .relative()
-                                        .child(
-                                            img(path.clone())
-                                                .absolute()
-                                                .size_full()
-                                                .object_fit(ObjectFit::Contain),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{} · 원문 {}쪽", f.caption, f.page)),
-                                ),
-                        )
-                        .when(!context.is_empty(), |view| {
-                            view.child(
-                                div().flex_1().min_w(rems(16.)).child(
-                                    TextView::markdown(
-                                        ("figure-context", ix),
-                                        reader_format::display_body(context),
-                                    )
-                                    .markdown_extensions(self.extensions.clone())
-                                    .style(self.note_style())
-                                    .selectable(true)
-                                    .on_link_click(
-                                        |url, _, _, cx| {
-                                            if url.starts_with("https://")
-                                                || url.starts_with("http://")
-                                            {
-                                                cx.open_url(url);
-                                            }
-                                        },
-                                    ),
-                                ),
-                            )
-                        })
-                        .into_any_element(),
-                }
-            }))
+            .child(if self.html.is_some() {
+                "학습 노트를 준비하고 있습니다"
+            } else {
+                "HTML 읽기 화면을 열지 못했습니다. 앱을 다시 열어 주세요."
+            })
             .into_any_element()
     }
     pub(crate) fn zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
@@ -1026,35 +953,54 @@ impl Render for ReaderView {
             self.content(self.tab, cx)
         };
         let source_only = self.source_visible && window.viewport_size().width < px(1100.);
-        let mut reader = div()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .flex()
-            .items_stretch()
-            .when(!source_only, |view| {
-                view.child(
-                    div()
-                        .id("note-scroll")
-                        .bg(if cx.theme().is_dark() {
-                            rgb(0x1e222a).into()
-                        } else {
-                            cx.theme().background
-                        })
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_y_scroll()
-                        .child(
-                            div()
-                                .max_w(rems(52.))
-                                .mx_auto()
-                                .p_6()
-                                .text_size(px(self.font_size))
-                                .line_height(relative(1.85))
-                                .child(content),
-                        ),
-                )
-            });
+        let html_active =
+            self.tab == 0 && !self.body.is_empty() && !source_only && self.html.is_some();
+        if !html_active {
+            self.hide_html();
+        }
+        let html_element = if html_active {
+            Some(
+                self.html
+                    .as_mut()
+                    .unwrap()
+                    .element(cx.theme().is_dark(), self.font_size),
+            )
+        } else {
+            None
+        };
+        let mut reader = div().flex_1().min_w_0().min_h_0().flex().items_stretch();
+        if !source_only {
+            let pane = if let Some(html) = html_element {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(html)
+                    .into_any_element()
+            } else {
+                div()
+                    .id("note-scroll")
+                    .bg(if cx.theme().is_dark() {
+                        rgb(0x1e222a).into()
+                    } else {
+                        cx.theme().background
+                    })
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .max_w(rems(52.))
+                            .mx_auto()
+                            .p_6()
+                            .text_size(px(self.font_size))
+                            .line_height(relative(1.85))
+                            .child(content),
+                    )
+                    .into_any_element()
+            };
+            reader = reader.child(pane);
+        }
         if self.source_visible {
             reader = reader.child(
                 div()
@@ -1344,20 +1290,16 @@ impl Render for ReaderView {
                     })
                     .child(div().flex_1())
                     .child(
-                        ui::tool(
-                            "source",
-                            IconName::PanelsTopLeft,
-                            "원문 함께 보기 / 그림 연결",
-                        )
-                        .selected(self.source_visible)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if this.source_visible {
-                                this.source_visible = false;
-                                cx.notify();
-                            } else {
-                                this.source_page(cx);
-                            }
-                        })),
+                        ui::tool("source", IconName::PanelsTopLeft, "원문 함께 보기")
+                            .selected(self.source_visible)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.source_visible {
+                                    this.source_visible = false;
+                                    cx.notify();
+                                } else {
+                                    this.source_page(cx);
+                                }
+                            })),
                     )
                     .child(
                         ui::tool("open-pdf", IconName::FileText, "원본 PDF 열기")

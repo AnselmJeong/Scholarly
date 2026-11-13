@@ -1,7 +1,7 @@
 use crate::{
     figures,
     library::{Library, Settings},
-    provider, reader_format, reading,
+    provider, reading,
 };
 use std::{
     fs,
@@ -81,18 +81,18 @@ fn source_change_invalidates_review_label() {
 }
 #[test]
 fn math_html_is_portable_and_untrusted_markup_stays_inert() {
-    let dir = tempfile::tempdir().unwrap();
-    let pdf = dir.path().join("paper.pdf");
-    fs::write(&pdf, b"source").unwrap();
-    let output = dir.path().join("note.html");
-    reader_format::export_html("<unsafe>","# 학습\n\n**흥분·억제 균형(E/I)**은 중요한 개념이다.\n\n비율 \\(\\frac{E}{I}\\)\n\n<script>alert(1)</script>\n\n[link](javascript:alert)\n\n| A | B |\n|---|---|\n| 1 | 2 |",&pdf,dir.path(),&output).unwrap();
-    let html = fs::read_to_string(output).unwrap();
-    assert!(html.contains("data:image/svg+xml;base64,"));
-    assert!(html.contains("<table>"));
-    assert!(html.contains("<strong>흥분·억제 균형(E/I</strong>)은"));
-    assert!(!html.contains("<script>"));
-    assert!(!html.contains("href=\"javascript:"));
+    let content = crate::reader_html::markup(
+        "# 학습\n\n**흥분·억제 균형(E/I)**은 중요한 개념이다.\n\n비율 \\(\\frac{E}{I}\\)\n\n<script>alert(1)</script>\n\n[link](javascript:alert)\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+    );
+    assert!(content.contains("data-tex="));
+    assert!(content.contains("<table>"));
+    assert!(content.contains("<strong>흥분·억제 균형(E/I</strong>)은"));
+    assert!(!content.contains("<script>"));
+    assert!(!content.contains("href=\"javascript:"));
+    let html = crate::reader_html::shell(&content, "<unsafe>");
+    assert!(html.contains("data:font/woff2;base64,"));
     assert!(html.contains("&lt;unsafe&gt;"));
+    assert!(html.contains("script-src 'nonce-scholarly-reader-v1'"));
 }
 #[test]
 fn figure_integrity_and_changed_headings_do_not_silently_relocate() {
@@ -361,15 +361,60 @@ fn codex_can_cancel_even_when_subprocess_stops_reading_a_large_prompt() {
     timer.join().unwrap();
 }
 #[test]
-fn real_paper_formula_corpus_is_renderable() {
+fn legacy_single_dollar_display_and_block_math_keep_tex_intact() {
+    let equation = r"dFC_{ij}=\operatorname{Var}_{w}\!\left(r_{ij}^{(w)}\right)";
+    let display = crate::reader_html::markup(&format!("${equation}$"));
+    assert!(display.contains("class=\"math-display\""));
+    assert!(display.contains(equation));
+    let normal = crate::reader_html::markup(&format!("여기서 ${equation}$는 분산이다."));
+    assert!(normal.contains("class=\"math-inline\""));
+    let block = crate::reader_html::markup(&format!("$$\n{equation}\n$$"));
+    assert!(block.contains("class=\"math-display\""));
+    assert!(block.contains(equation));
+}
+#[test]
+fn automatic_visuals_match_exact_kind_number_and_keep_table_continuations() {
+    use crate::source_visuals::{Asset, Visual};
     let dir = tempfile::tempdir().unwrap();
-    for math in [
-        r"S(t)=\sum_{k=1}^{t}\bigl(A(k)-\overline A\bigr)",
-        r"fE/I=1-r\!\left(W_{\mathrm{amp}},W_{\mathrm{nF}}\right)",
-        r"fE/I=1-r(\text{창별 진폭},\text{창별 nF})",
-    ] {
-        let svg =
-            reader_format::formula_svg(math, dir.path()).unwrap_or_else(|e| panic!("{math}: {e}"));
-        assert!(svg.starts_with(b"<svg"));
-    }
+    let path = dir.path().join("page.png");
+    fs::write(&path, b"png").unwrap();
+    let assets = vec![
+        ("figure", "1", 2),
+        ("figure", "10", 3),
+        ("table", "1", 4),
+        ("table", "1", 5),
+        ("figure", "S1", 6),
+    ]
+    .into_iter()
+    .map(|(kind, n, page)| Asset {
+        path: path.clone(),
+        visual: Visual {
+            kind: kind.into(),
+            number: n.into(),
+            label: format!("{kind} {n}"),
+            page,
+            caption: "Original caption".into(),
+            rect: [0., 0., 1., 1.],
+            cropped: false,
+        },
+    })
+    .collect::<Vec<_>>();
+    let content=crate::reader_html::content("## Method\n\n그림 10에서 결과를 확인한다.\n\nTable 1의 표본을 비교한다.\n\nFigure S1의 보조 결과.",&assets).unwrap();
+    assert!(
+        content.find("data-visual=\"figure 10\"").unwrap() < content.find("Table 1의").unwrap()
+    );
+    assert!(
+        content.find("data-visual=\"figure 1\"").unwrap()
+            > content.find("원문의 그림과 표").unwrap()
+    );
+    assert_eq!(content.matches("data-visual=\"table 1\"").count(), 2);
+    assert!(content.contains("data-page=\"5\""));
+    assert_eq!(
+        crate::source_visuals::references("Figs. 1–3"),
+        vec![
+            ("figure".into(), "1".into()),
+            ("figure".into(), "2".into()),
+            ("figure".into(), "3".into())
+        ]
+    );
 }

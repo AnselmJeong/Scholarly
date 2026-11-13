@@ -1,3 +1,6 @@
+mod html_surface;
+mod reader_html;
+mod source_visuals;
 use gpui_kit::prelude::FluentBuilder;
 mod evaluation;
 mod exports;
@@ -106,13 +109,18 @@ impl Scholarly {
                 cx.notify();
             },
         );
-        let opened = cx.subscribe(&library, |this, _, OpenStudy(article), cx| {
-            let _ = article.id;
-            this.reading_visible = true;
-            this.compact_inspector = false;
-            this.reader.update(cx, |r, cx| r.show_note(cx));
-            cx.notify();
-        });
+        let opened = cx.subscribe_in(
+            &library,
+            window,
+            |this, _, OpenStudy(article), window, cx| {
+                let _ = article.id;
+                window.focus(&this.focus, cx);
+                this.reading_visible = true;
+                this.compact_inspector = false;
+                this.reader.update(cx, |r, cx| r.show_note(cx));
+                cx.notify();
+            },
+        );
         let changed = cx.subscribe(&reader, |this, _, ArticleChanged(article), cx| {
             this.library.update(cx, |library, cx| {
                 library.update_article(article.clone(), cx)
@@ -217,6 +225,11 @@ impl Render for Scholarly {
         let show_nav =
             self.sidebar_visible && (!narrow || (!self.reading_visible && !self.compact_inspector));
         let show_inspector = self.inspector_visible && !narrow && !auxiliary;
+        let reader_visible =
+            self.reading_visible && !auxiliary && !(narrow && self.compact_inspector);
+        if !reader_visible {
+            self.reader.update(cx, |r, _| r.hide_html());
+        }
         let center = if self.settings_visible {
             self.preferences.clone().into_any_element()
         } else if self.queue_visible {
@@ -294,7 +307,8 @@ impl Render for Scholarly {
                 this.reading_visible = false;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &OpenCurrentStudy, _, cx| {
+            .on_action(cx.listener(|this, _: &OpenCurrentStudy, window, cx| {
+                window.focus(&this.focus, cx);
                 this.reading_visible = true;
                 this.compact_inspector = false;
                 this.reader.update(cx, |r, cx| r.show_note(cx));

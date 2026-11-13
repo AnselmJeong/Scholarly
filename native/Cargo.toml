@@ -1,11 +1,11 @@
 [package]
 name = "scholarly-native"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 publish = false
 
 [package.metadata.bundle]
-build-number = 11
+build-number = 12
 
 [dependencies]
 gpui-kit = "=0.9.1"
@@ -20,7 +20,6 @@ notify = "8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 regex = "1"
 base64 = "0.22"
-mitex = "=0.2.4"
 security-framework = "=3.7.0"
 toml = "0.9"
 tokio = {version="1",features=["rt","time","macros","net"]}
@@ -28,6 +27,7 @@ tempfile = "3"
 libc = "0.2"
 pulldown-cmark = "0.13"
 zip = { version = "6", default-features = false, features = ["deflate"] }
+wry = { version = "0.57.0", default-features = false, features = ["os-webview"] }
 
 [profile.release]
 opt-level = "s"

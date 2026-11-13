@@ -12,7 +12,8 @@ BUNDLE=${SCHOLARLY_BUNDLE_PATH:-"$ROOT/native/target/Scholarly Native.app"}
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$ROOT/native/target/$PROFILE/scholarly-native" "$BUNDLE/Contents/MacOS/Scholarly"
 cp "$ROOT/native/target/pdf-helper" "$BUNDLE/Contents/Resources/pdf-helper"
-cp -f /opt/homebrew/bin/typst "$BUNDLE/Contents/Resources/typst"
+# Old bundles may still contain the retired external math renderer.
+rm -f "$BUNDLE/Contents/Resources/typst"
 cp "$ROOT/native/THIRD_PARTY_NOTICES.txt" "$BUNDLE/Contents/Resources/Third Party Notices.txt"
 if [ -f "$ROOT/native/assets/Scholarly.icns" ]; then
   cp "$ROOT/native/assets/Scholarly.icns" "$BUNDLE/Contents/Resources/Scholarly.icns"
@@ -39,7 +40,6 @@ with open(sys.argv[2], "wb") as output:
 PYMETA
 
 codesign --force --sign "${SCHOLARLY_SIGN_IDENTITY:--}" "$BUNDLE/Contents/Resources/pdf-helper"
-codesign --force --sign "${SCHOLARLY_SIGN_IDENTITY:--}" "$BUNDLE/Contents/Resources/typst"
 codesign --force --sign "${SCHOLARLY_SIGN_IDENTITY:--}" "$BUNDLE"
 codesign --verify --deep --strict "$BUNDLE"
 printf '%s\n' "$BUNDLE"

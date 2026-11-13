@@ -13,7 +13,6 @@ for package in sorted(metadata['packages'],key=lambda p:(p['name'],p['version'])
         if file.is_file() and file.name.lower().startswith(('license','licence','copying','notice')):
             try:output.append(f'\n{file.name}\n{file.read_text()}\n')
             except UnicodeError:pass
-for file in [Path('/opt/homebrew/opt/typst/LICENSE'),Path('/opt/homebrew/opt/typst/NOTICE')]:
-    output.append(f'\nTypst 0.15.1 — {file.name}\n{file.read_text()}\n')
+output.append('\nKaTeX 0.16.28 — MIT\n'+(root/'native/assets/reader/KaTeX-LICENSE.txt').read_text()+'\n')
 (root/'native/THIRD_PARTY_NOTICES.txt').write_text(''.join(output))
 print('Wrote native/THIRD_PARTY_NOTICES.txt')
