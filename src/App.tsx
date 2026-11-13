@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { SidebarTabs } from '@/components/SidebarTabs'
 import { ArticleList } from '@/components/ArticleList'
 import { ArticleDetail } from '@/components/ArticleDetail'
@@ -66,6 +66,9 @@ function App() {
   const [centerTab, setCenterTab] = useState<'list' | 'guidance'>('list');
   const [guidanceContent, setGuidanceContent] = useState<string>('');
   const [guidanceTitle, setGuidanceTitle] = useState<string>('');
+  const [guidanceState, setGuidanceState] = useState('');
+  const openGuidancePath = useRef<string | null>(null);
+  const [streamingGuidance, setStreamingGuidance] = useState(false);
   const [markdownTheme, setMarkdownTheme] = useState<MarkdownTheme>('lapis-dark');
   
   // App Loading State
@@ -148,6 +151,14 @@ function App() {
     return () => {
       window.ipcRenderer.off('guidance-batch-progress', handleGuidanceBatchProgress);
     };
+  }, []);
+
+  useEffect(() => {
+    const handleText = (_event: unknown, value: { filePath: string; text: string }) => {
+      if (value.filePath === openGuidancePath.current) setGuidanceContent(value.text);
+    };
+    window.ipcRenderer.on('guidance-text', handleText);
+    return () => window.ipcRenderer.off('guidance-text', handleText);
   }, []);
 
   // Fetch keywords for specific selected article detail view
@@ -352,26 +363,38 @@ function App() {
     }
   };
 
-  const handleOpenGuidance = async (article: Article) => {
+  const handleOpenGuidance = async (article: Article, force = false) => {
+      openGuidancePath.current = article.filePath;
       try {
           let result = await window.ipcRenderer.invoke('read-guidance', article.filePath);
-          if (shouldGenerateGuidanceForOpen(result)) {
+          if (force || shouldGenerateGuidanceForOpen(result)) {
+              setGuidanceTitle(article.title || article.filename);
+              setGuidanceContent(result.success ? result.content : '');
+              setGuidanceState('작성 중 — 아직 저장되지 않았습니다');
+              setStreamingGuidance(true);
+              setCenterTab('guidance');
               setSingleGuidePaths(prev => prev.includes(article.filePath) ? prev : [...prev, article.filePath]);
               try {
-                const generateResult = await window.ipcRenderer.invoke('generate-guidance', { filePath: article.filePath });
+                const generateResult = await window.ipcRenderer.invoke('generate-guidance', { filePath: article.filePath, force });
                 if (!generateResult.success) {
-                    alert("Failed to generate a current digest: " + (generateResult.error || 'Unknown error'));
+                    if (openGuidancePath.current === article.filePath) {
+                      setGuidanceState(generateResult.cancelled ? '작성을 취소했습니다. 이전 노트는 유지됩니다.' : `작성 실패 — 이전 노트는 유지됩니다. ${generateResult.error || ''}`);
+                      setGuidanceContent(result.success ? result.content : '');
+                    }
                     return;
                 }
 
                 await fetchData();
                 result = await window.ipcRenderer.invoke('read-guidance', article.filePath);
               } finally {
+                if (openGuidancePath.current === article.filePath) setStreamingGuidance(false);
                 setSingleGuidePaths(prev => prev.filter(fp => fp !== article.filePath));
               }
           }
 
+          if (openGuidancePath.current !== article.filePath) return;
           if (result.success) {
+              setGuidanceState(result.reviewStatus === 'not_run' ? '학습 노트 · 원문 대조 미실행' : '원문 대조 완료');
               setGuidanceContent(result.content);
               setGuidanceTitle(
                 result.status === 'current'
@@ -543,7 +566,11 @@ function App() {
                <GuidanceViewer
                    content={guidanceContent}
                    title={guidanceTitle}
-                   onClose={() => setCenterTab('list')}
+                   status={guidanceState}
+                   isGenerating={streamingGuidance}
+                   onCancel={() => window.ipcRenderer.invoke('cancel-guidance', openGuidancePath.current)}
+                   onRewrite={() => { const article = articles.find(a => a.filePath === openGuidancePath.current); if (article) void handleOpenGuidance(article, true); }}
+                   onClose={() => { openGuidancePath.current = null; setCenterTab('list'); }}
                    theme={markdownTheme}
                />
            )

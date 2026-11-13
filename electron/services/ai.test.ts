@@ -138,6 +138,24 @@ test('Claude and Codex subscriptions route through their CLIs without an Ollama 
   await fs.writeFile(executable, `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+  const rl = require('node:readline').createInterface({input:process.stdin});
+  rl.on('line', line => {
+    const m=JSON.parse(line); if(!m.id)return;
+    let result={};
+    if(m.method==='account/read')result={account:{type:'chatgpt'}};
+    if(m.method==='model/list')result={data:[{model:'test',isDefault:true,hidden:false,defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'}]}],nextCursor:null};
+    if(m.method==='account/rateLimits/read')result={ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:1}}};
+    if(m.method==='thread/start')result={thread:{id:'t'},model:'test'};
+    if(m.method==='turn/start'){
+      if(!JSON.stringify(m.params.input).includes('한국어 question'))process.exit(2);
+      result={turn:{id:'turn'}};
+      console.log(JSON.stringify({method:'item/completed',params:{threadId:'t',turnId:'turn',item:{id:'a',type:'agentMessage',text:'Codex note',phase:'final_answer'}}}));
+      console.log(JSON.stringify({method:'turn/completed',params:{threadId:'t',turn:{id:'turn',status:'completed'}}}));
+    }
+    console.log(JSON.stringify({id:m.id,result}));
+  });
+} else {
 if (args[0] === 'auth') { console.log(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' })); process.exit(0); }
 if (args[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0); }
 let input = '';
@@ -148,6 +166,7 @@ process.stdin.on('end', () => {
   if (args.includes('--output-last-message')) fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], 'Codex note');
   else console.log(JSON.stringify({ subtype: 'success', is_error: false, result: 'Claude note' }));
 });
+}
 `, { mode: 0o700 });
   try {
     setOllamaApiKey('');

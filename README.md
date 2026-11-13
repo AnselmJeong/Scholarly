@@ -5,6 +5,13 @@ Academic PDF library with paper Q&A and evidence-first Markdown reading notes.
 See [PDF deep reading and AI provider setup](docs/deep-reading.md) for the reading
 workflow, Claude/Codex subscription connections, Ollama Cloud settings, and tests.
 
+## Native desktop app (0.10.1)
+
+The Rust + GPUI Kit app preserves the three-pane library and adds learning notes,
+streaming generation, safe rewriting, equations, and source-linked figures.
+See [native build and installation](native/README.md) and the
+[paper evaluation report](docs/evaluation/2026-11-13-learning-native.md).
+
 ## Frontend tooling
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

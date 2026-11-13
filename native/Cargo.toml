@@ -1,0 +1,36 @@
+[package]
+name = "scholarly-native"
+version = "0.10.1"
+edition = "2024"
+publish = false
+
+[package.metadata.bundle]
+build-number = 11
+
+[dependencies]
+gpui-kit = "=0.9.1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+walkdir = "2"
+notify = "8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+regex = "1"
+base64 = "0.22"
+mitex = "=0.2.4"
+security-framework = "=3.7.0"
+toml = "0.9"
+tokio = {version="1",features=["rt","time","macros","net"]}
+tempfile = "3"
+libc = "0.2"
+pulldown-cmark = "0.13"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

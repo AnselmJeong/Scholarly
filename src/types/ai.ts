@@ -29,3 +29,7 @@ export interface ProviderStatus {
   available: boolean;
   message: string;
 }
+
+export type NoteMode = 'learning' | 'reviewed';
+export type ReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'none';
+export const isReasoningEffort = (value: unknown): value is ReasoningEffort => ['default', 'low', 'medium', 'high', 'none'].includes(String(value));

@@ -1,0 +1,2 @@
+# Preserve upstream license notices verbatim.
+native/THIRD_PARTY_NOTICES.txt linguist-generated=true -whitespace

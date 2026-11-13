@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { DEFAULT_PROVIDER_MODELS } from '../types/ai';
-import type { AIProvider, ProviderModels, ProviderStatus } from '../types/ai';
+import type { AIProvider, ProviderModels, ProviderStatus, NoteMode, ReasoningEffort } from '../types/ai';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -18,6 +18,8 @@ interface AppSettings {
     chatModel: string;
     guideModel: string;
     guidePrompt: string;
+    noteMode: NoteMode;
+    reasoningEffort: ReasoningEffort;
     outputLanguage: 'ko' | 'en';
     promptVersion: string;
     hasOllamaApiKey: boolean;
@@ -42,8 +44,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [chatModel, setChatModel] = useState('');
   const [guideModel, setGuideModel] = useState('nemotron-3-nano:30b-cloud');
   const [guidePrompt, setGuidePrompt] = useState('');
+  const [noteMode, setNoteMode] = useState<NoteMode>('learning');
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('low');
   const [outputLanguage, setOutputLanguage] = useState<'ko' | 'en'>('ko');
-  const [promptVersion, setPromptVersion] = useState('scholarly-concise-digest-v4');
+  const [promptVersion, setPromptVersion] = useState('scholarly-learning-v1');
   const [ollamaApiKey, setOllamaApiKey] = useState('');
   const [hasOllamaApiKey, setHasOllamaApiKey] = useState(false);
   const [markdownTheme, setMarkdownTheme] = useState<MarkdownTheme>('lapis-dark');
@@ -69,8 +73,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
              setChatModel(settings.ai.chatModel);
              setGuideModel(settings.ai.guideModel ?? '');
              setGuidePrompt(settings.ai.guidePrompt || '');
+             setNoteMode(settings.ai.noteMode || 'learning');
+             setReasoningEffort(settings.ai.reasoningEffort || 'low');
              setOutputLanguage(settings.ai.outputLanguage === 'en' ? 'en' : 'ko');
-             setPromptVersion(settings.ai.promptVersion || 'scholarly-concise-digest-v4');
+             setPromptVersion(settings.ai.promptVersion || 'scholarly-learning-v1');
              setHasOllamaApiKey(settings.ai.hasOllamaApiKey);
           }
           if (settings && settings.ui) {
@@ -87,7 +93,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setSaveError(null);
     try {
       const result = await window.ipcRenderer.invoke<SaveSettingsResult>('save-settings', {
-        ai: { provider, claudePath, codexPath, modelsByProvider, chatModel, guideModel, guidePrompt, outputLanguage, promptVersion, ollamaApiKey },
+        ai: { provider, claudePath, codexPath, modelsByProvider, chatModel, guideModel, guidePrompt, noteMode, reasoningEffort, outputLanguage, promptVersion, ollamaApiKey },
         ui: { markdownTheme }
       });
       if (!result.success) {
@@ -177,6 +183,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         {/* Content */}
         <div className="p-6 space-y-8 max-h-[70vh] overflow-y-auto custom-scrollbar">
           
+          {!isLoading && activeTab === 'general' && <div className="space-y-3">
+            <label className="block text-sm text-slate-200">읽기 방식
+              <select aria-label="읽기 방식" value={noteMode} onChange={event => setNoteMode(event.target.value as NoteMode)} className="mt-2 w-full bg-slate-800 rounded-lg p-3">
+                <option value="learning">학습 노트 — 충분한 설명, 한 번 생성</option>
+                <option value="reviewed">학습 노트 + 원문 대조</option>
+              </select>
+            </label>
+            <p className="text-xs text-slate-400">학습 노트는 별도 파일에 저장합니다. 원문 대조를 선택하면 생성 후 AI가 원문과 다시 비교합니다.</p>
+            <label className="block text-sm text-slate-200">추론 강도
+              <select aria-label="추론 강도" value={reasoningEffort} onChange={event => setReasoningEffort(event.target.value as ReasoningEffort)} className="mt-2 w-full bg-slate-800 rounded-lg p-3">
+                <option value="low">낮음 — 빠른 학습용</option><option value="default">모델 기본값</option>
+                <option value="medium">중간</option><option value="high">높음</option><option value="none">끄기 — 지원 모델만</option>
+              </select>
+            </label>
+            <p className="text-xs text-slate-400">설명의 분량과 별개입니다. 모델이 지원하지 않는 설정은 오류로 알려드립니다.</p>
+          </div>}
           {isLoading && (
              <div className="text-center text-slate-500 py-4">Loading settings...</div>
           )}

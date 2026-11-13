@@ -1,5 +1,5 @@
-import { DEFAULT_PROVIDER_MODELS, isAIProvider } from '../src/types/ai';
-import type { AIProvider, ProviderModels } from '../src/types/ai';
+import { DEFAULT_PROVIDER_MODELS, isAIProvider, isReasoningEffort } from '../src/types/ai';
+import type { AIProvider, ProviderModels, NoteMode, ReasoningEffort } from '../src/types/ai';
 import { app, safeStorage } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -19,6 +19,8 @@ export interface AppSettings {
     chatModel: string;
     guideModel: string;
     guidePrompt: string;
+    noteMode: NoteMode;
+    reasoningEffort: ReasoningEffort;
     outputLanguage: DigestOutputLanguage;
     promptVersion: string;
     ollamaApiKey: string;
@@ -41,6 +43,8 @@ export interface SettingsUpdate {
     chatModel: string;
     guideModel: string;
     guidePrompt: string;
+    noteMode: NoteMode;
+    reasoningEffort: ReasoningEffort;
     outputLanguage: DigestOutputLanguage;
     promptVersion: string;
     ollamaApiKey?: string;
@@ -128,6 +132,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     chatModel: 'mistral-large-3:675b-cloud',
     guideModel: 'nemotron-3-nano:30b-cloud',
     guidePrompt: getDefaultGuidePrompt(),
+    noteMode: 'learning',
+    reasoningEffort: 'low',
     outputLanguage: 'ko',
     promptVersion: DIGEST_PROMPT_VERSION,
     ollamaApiKey: ''
@@ -191,6 +197,8 @@ export function loadSettings(): AppSettings {
             ? ai.outputLanguage
             : DEFAULT_SETTINGS.ai.outputLanguage,
           promptVersion: DIGEST_PROMPT_VERSION,
+          noteMode: ai.noteMode === 'reviewed' ? 'reviewed' : 'learning',
+          reasoningEffort: isReasoningEffort(ai.reasoningEffort) ? ai.reasoningEffort : 'low',
           ollamaApiKey: decryptApiKey(encryptedApiKey) || legacyApiKey
         },
         ui: {
@@ -222,6 +230,8 @@ export function saveSettings(settings: AppSettings): void {
         chatModel: settings.ai.chatModel,
         guideModel: settings.ai.guideModel,
         guidePrompt: settings.ai.guidePrompt,
+        noteMode: settings.ai.noteMode,
+        reasoningEffort: settings.ai.reasoningEffort,
         outputLanguage: settings.ai.outputLanguage,
         promptVersion: settings.ai.promptVersion,
         ollamaApiKeyEncrypted: encryptApiKey(settings.ai.ollamaApiKey)

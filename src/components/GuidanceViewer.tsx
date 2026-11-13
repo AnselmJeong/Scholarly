@@ -16,6 +16,10 @@ interface GuidanceViewerProps {
     onClose: () => void;
     title: string;
     theme?: MarkdownTheme;
+    status?: string;
+    isGenerating?: boolean;
+    onCancel?: () => void;
+    onRewrite?: () => void;
 }
 
 const THEME_BACKGROUNDS: Record<MarkdownTheme, string> = {
@@ -25,7 +29,7 @@ const THEME_BACKGROUNDS: Record<MarkdownTheme, string> = {
     'newsprint': 'bg-[#f3f2ee]'
 };
 
-export function GuidanceViewer({ content, onClose, title, theme = 'lapis-dark' }: GuidanceViewerProps) {
+export function GuidanceViewer({ content, onClose, title, theme = 'lapis-dark', status, isGenerating, onCancel, onRewrite }: GuidanceViewerProps) {
     // Normalize LaTeX delimiters for remark-math
     const preprocessContent = (text: string) => {
         return text
@@ -44,14 +48,20 @@ export function GuidanceViewer({ content, onClose, title, theme = 'lapis-dark' }
                    <span className="text-lg">📄</span> 
                    {title}
                </h2>
+               <div className="flex gap-2 shrink-0 no-drag">
+               {onRewrite && <button onClick={onRewrite} disabled={isGenerating} title="새 노트가 완성되면 교체하고 이전 버전을 보관합니다" className="px-3 py-1.5 rounded-lg text-xs border border-slate-600 text-slate-200 disabled:opacity-40">다시 작성</button>}
                <button 
                 onClick={onClose} 
                 className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded-lg text-xs font-medium text-slate-400 hover:text-white transition-all border border-slate-700/50 cursor-pointer no-drag"
                >
                    ✕ Close
                </button>
+               </div>
            </div>
            
+           {status && <div role="status" className="px-4 py-2 text-xs text-slate-300 flex items-center justify-between border-b border-slate-700">
+             <span>{status}</span>{isGenerating && <button onClick={onCancel} className="px-3 py-1 rounded bg-slate-700">작성 취소</button>}
+           </div>}
            <div className={`flex-1 overflow-y-auto px-8 py-8 custom-scrollbar w-full ${THEME_BACKGROUNDS[theme]}`}>
                 <div className="max-w-4xl mx-auto pb-16">
                     <article className={`theme-${theme}`}>
@@ -76,7 +86,7 @@ export function GuidanceViewer({ content, onClose, title, theme = 'lapis-dark' }
                     </article>
                     
                     <div className="mt-16 pt-8 border-t border-slate-800 text-center text-slate-600 text-xs">
-                        End of guidance
+                        {isGenerating ? '작성 중…' : '학습 노트 끝'}
                     </div>
                 </div>
            </div>

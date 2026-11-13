@@ -8,3 +8,5 @@ release
 node_modules
 yarn-error.log
 yarn.lock
+.scholarly-eval/
+native/target/

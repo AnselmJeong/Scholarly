@@ -1,3 +1,5 @@
+import { generationFingerprint, learningPath, learningStatus, parseLearningNote, publishLearningNote } from './services/learning';
+import { extractDocumentCached } from './services/extraction-cache';
 import { isAIProvider } from '../src/types/ai';
 import type { ProviderConnection } from '../src/types/ai';
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
@@ -18,7 +20,7 @@ import { eq, and, sql, asc, desc } from 'drizzle-orm'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import archiver from 'archiver'
-import { extractDocument, extractText } from './services/pdf'
+import { extractText } from './services/pdf'
 import { resolveRestorableRootPath } from './services/root-folder'
 import {
   PDF_EXTRACTION_VERSION,
@@ -85,13 +87,6 @@ function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
   );
 }
 
-function loadGuidancePrompt(): string {
-  const settings = loadSettings();
-  if (settings.ai.guidePrompt && settings.ai.guidePrompt.trim().length > 0) {
-    return settings.ai.guidePrompt;
-  }
-  return getDefaultGuidePrompt();
-}
 
 type DigestGenerationOutcome = 'created' | 'updated' | 'skipped_current';
 
@@ -275,6 +270,19 @@ async function buildArticleSourceUnit(
 }
 
 async function getDigestStatusForPdf(filePath: string, settings = loadSettings()): Promise<DigestStatus> {
+  if (settings.ai.noteMode === 'learning') {
+    const output = learningPath(filePath);
+    if (!fs.existsSync(filePath) || !fs.existsSync(output)) return 'missing';
+    try {
+      const text = fs.readFileSync(output, 'utf8');
+      const { metadata } = parseLearningNote(text);
+      const sourceSha256 = await calculateSha256(filePath);
+      const unit = { sourceSha256, sourcePageStart: Number(metadata.source_page_start), sourcePageEnd: Number(metadata.source_page_end),
+        outputLanguage: settings.ai.outputLanguage, generatorModel: `${settings.ai.provider}:${settings.ai.guideModel || 'default'}`,
+        promptVersion: DIGEST_PROMPT_VERSION, extractionVersion: PDF_EXTRACTION_VERSION } as DigestSourceUnit;
+      return learningStatus(text, generationFingerprint(unit, settings.ai.guidePrompt, settings.ai.reasoningEffort));
+    } catch { return 'failed'; }
+  }
   const summaryPath = getSummaryPathForPdf(filePath);
   loadDigestDiagnostics();
   if (!fs.existsSync(filePath)) return 'missing';
@@ -315,6 +323,7 @@ interface DigestRunOptions {
 
 const MAX_GENERATION_ATTEMPTS = 2;
 let activeDigestRuns = 0;
+const singleDigestControllers = new Map<string, AbortController>();
 
 async function ensureGuidanceForPdf(
   filePath: string,
@@ -328,17 +337,22 @@ async function ensureGuidanceForPdf(
     if (options.signal?.aborted) {
       return { success: false, cancelled: true, error: 'Digest generation cancelled.' };
     }
-    const summaryPath = getSummaryPathForPdf(filePath);
+    const runSettings = loadSettings();
+    const isLearning = runSettings.ai.noteMode === 'learning';
+    const summaryPath = isLearning ? learningPath(filePath) : getSummaryPathForPdf(filePath);
     if (!fs.existsSync(filePath)) {
       return { success: false, error: `PDF not found: ${filePath}` };
     }
     const sourceSha256 = await calculateSha256(filePath);
     options.onProgress?.('extracting', 'Extracting page-marked PDF text');
-    const extracted = await extractDocument(filePath, { omitReferences: true });
+    if (!force && await getDigestStatusForPdf(filePath, runSettings) === 'current') return { success: true, summaryPath, outcome: 'skipped_current', status: 'current' };
+    const extracted = await extractDocumentCached(filePath, sourceSha256, path.join(app.getPath('userData'), 'reading-cache'));
     const sourceUnit = await buildArticleSourceUnit(filePath, sourceSha256, extracted);
-    expectedFingerprint = calculateContractFingerprint(sourceUnit);
+    expectedFingerprint = isLearning
+      ? generationFingerprint(sourceUnit, runSettings.ai.guidePrompt, runSettings.ai.reasoningEffort)
+      : calculateContractFingerprint(sourceUnit);
     const existingContent = fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, 'utf8') : null;
-    const existingStatus = inspectDigestStatus(existingContent, expectedFingerprint);
+    const existingStatus = isLearning ? learningStatus(existingContent, expectedFingerprint) : inspectDigestStatus(existingContent, expectedFingerprint);
     const existingIsPublishedDigest = (() => {
       if (!existingContent) return false;
       try {
@@ -362,10 +376,14 @@ async function ensureGuidanceForPdf(
       const completion = await generateGuidance({
         document: extracted,
         sourceUnit,
-        additionalGuidance: loadGuidancePrompt(),
+        additionalGuidance: runSettings.ai.guidePrompt,
         validationFeedback
       }, {
         signal: options.signal,
+        mode: runSettings.ai.noteMode,
+        reasoningEffort: runSettings.ai.reasoningEffort,
+        cacheDirectory: path.join(app.getPath('userData'), 'reading-cache', 'evidence'),
+        onText: text => win?.webContents.send('guidance-text', { filePath, text }),
         onProgress: options.onProgress
       });
       const body = normalizeGeneratedDigestBody(completion.content);
@@ -387,6 +405,13 @@ async function ensureGuidanceForPdf(
         throw new Error(`Generated digest body failed validation after ${MAX_GENERATION_ATTEMPTS} attempts: ${bodyValidation.errors.join(' | ')}`);
       }
 
+      if (isLearning) {
+        if (options.signal?.aborted) throw Object.assign(new Error('Generation cancelled.'), { name: 'AbortError' });
+        if (await calculateSha256(filePath) !== sourceSha256) throw new Error('The PDF changed during generation. The previous note was preserved.');
+        publishLearningNote(summaryPath, sourceUnit, extracted, completion, expectedFingerprint);
+        clearDigestFailure(filePath);
+        return { success: true, summaryPath, outcome: existingContent ? 'updated' : 'created', status: 'current' };
+      }
       if (!completion.readingAudit || completion.readingAudit.finalBodySha256 !== sha256(body)) {
         throw new Error('A passing quality review for this exact note is required before saving.');
       }
@@ -971,7 +996,7 @@ app.whenReady().then(async () => {
     // existence alone. SHA-256 values are cached by size/mtime.
     const settings = loadSettings();
     const withGuidance = await Promise.all(filtered.map(async a => {
-      const summaryPath = getSummaryPathForPdf(a.filePath);
+      const summaryPath = settings.ai.noteMode === 'learning' ? learningPath(a.filePath) : getSummaryPathForPdf(a.filePath);
       const guidanceStatus = await getDigestStatusForPdf(a.filePath, settings);
       return {
         ...a,
@@ -988,11 +1013,13 @@ app.whenReady().then(async () => {
       if (!currentRootPath || !isPathWithinRoot(filePath, currentRootPath)) {
         return { success: false, status: 'missing', error: 'The PDF is outside the selected root folder.' };
       }
-      const summaryPath = getSummaryPathForPdf(filePath);
+      const isLearning = loadSettings().ai.noteMode === 'learning';
+      const preferred = isLearning ? learningPath(filePath) : getSummaryPathForPdf(filePath);
+      const summaryPath = fs.existsSync(preferred) ? preferred : getSummaryPathForPdf(filePath);
       const status = await getDigestStatusForPdf(filePath);
       if (fs.existsSync(summaryPath)) {
           const content = fs.readFileSync(summaryPath, 'utf8');
-          return { success: true, content: getDigestReadingBody(content), status };
+          return { success: true, content: summaryPath.endsWith('.learning.md') ? parseLearningNote(content).body : getDigestReadingBody(content), status, reviewStatus: summaryPath.endsWith('.learning.md') ? 'not_run' : 'passed' };
       }
       const diagnostic = digestFailureDiagnostics.get(filePath);
       return { success: false, status, error: diagnostic?.error || 'Digest file not found' };
@@ -1020,7 +1047,10 @@ app.whenReady().then(async () => {
     return { success: true, folderPath: currentFolderPath };
   });
 
+  ipcMain.handle('cancel-guidance', (_event, filePath: string) => { singleDigestControllers.get(filePath)?.abort(); return { success: true }; });
+
   ipcMain.handle('generate-guidance', async (_event, arg: { filePath: string; force?: boolean }) => {
+    let controller: AbortController | undefined;
     try {
       if (guidanceBatchState?.status === 'running' || guidanceBatchState?.status === 'cancelling') {
         return { success: false, error: 'A digest batch is already running.' };
@@ -1028,14 +1058,17 @@ app.whenReady().then(async () => {
       if (!currentRootPath || !isPathWithinRoot(arg.filePath, currentRootPath)) {
         return { success: false, error: 'The PDF is outside the selected root folder.' };
       }
-      const result = await ensureGuidanceForPdf(arg.filePath, arg.force ?? false);
+      if (singleDigestControllers.has(arg.filePath)) return { success: false, error: 'This paper is already being generated.' };
+      controller = new AbortController();
+      singleDigestControllers.set(arg.filePath, controller);
+      const result = await ensureGuidanceForPdf(arg.filePath, arg.force ?? false, { signal: controller.signal });
       if (result.success) {
         win?.webContents.send('data-updated');
       }
       return result;
     } catch (error) {
       return { success: false, error: String(error) };
-    }
+    } finally { if (controller && singleDigestControllers.get(arg.filePath) === controller) singleDigestControllers.delete(arg.filePath); }
   });
 
   ipcMain.handle('start-guidance-batch', async (_event, arg: { folderPath?: string }) => {
@@ -1258,7 +1291,7 @@ app.whenReady().then(async () => {
       const current = loadSettings();
       if (!isAIProvider(update?.ai?.provider) || typeof update.ai.chatModel !== 'string' || typeof update.ai.guideModel !== 'string' ||
           typeof update.ai.guidePrompt !== 'string' || typeof update.ai.claudePath !== 'string' || typeof update.ai.codexPath !== 'string' ||
-          !['ko', 'en'].includes(update.ai.outputLanguage) || !['lapis-dark', 'lapis', 'vercel', 'newsprint'].includes(update.ui?.markdownTheme)) {
+          !['learning', 'reviewed'].includes(update.ai.noteMode) || !['default', 'low', 'medium', 'high', 'none'].includes(update.ai.reasoningEffort) || !['ko', 'en'].includes(update.ai.outputLanguage) || !['lapis-dark', 'lapis', 'vercel', 'newsprint'].includes(update.ui?.markdownTheme)) {
         return { success: false, error: 'Invalid settings.' };
       }
       const submittedApiKey = update.ai.ollamaApiKey?.trim() || '';
