@@ -5,7 +5,7 @@ Academic PDF library with paper Q&A and evidence-first Markdown reading notes.
 See [PDF deep reading and AI provider setup](docs/deep-reading.md) for the reading
 workflow, Claude/Codex subscription connections, Ollama Cloud settings, and tests.
 
-## Native desktop app (0.10.3)
+## Native desktop app (0.10.4)
 
 The Rust + GPUI Kit app preserves the three-pane library and adds learning notes,
 streaming generation and safe rewriting. Notes render as offline HTML with KaTeX,

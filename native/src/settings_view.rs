@@ -1,19 +1,28 @@
-use crate::library::Settings;
+use crate::{library::Settings, provider};
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Selectable, Sizable,
+    ActiveTheme, Disableable, Sizable,
     button::Button,
     input::{Input, InputContentType, InputState, Textarea, TextareaState},
+    radio::{Radio, RadioGroup},
+    select::{Select, SelectEvent, SelectState},
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 #[derive(Clone)]
 pub(crate) struct Saved(pub(crate) Settings);
 pub(crate) struct SettingsView {
     settings: Settings,
+    opened_connection: (String, String),
     home: PathBuf,
-    model: Entity<InputState>,
+    model: Entity<SelectState<Vec<SharedString>>>,
     codex: Entity<InputState>,
     claude: Entity<InputState>,
     url: Entity<InputState>,
@@ -23,8 +32,16 @@ pub(crate) struct SettingsView {
     catalog: Vec<serde_json::Value>,
     loading_models: bool,
     advanced: bool,
+    epoch: u64,
+    cancel: provider::Cancel,
+    _selection: Subscription,
 }
 impl EventEmitter<Saved> for SettingsView {}
+impl Drop for SettingsView {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
 impl SettingsView {
     pub(crate) fn new(
         settings: Settings,
@@ -32,12 +49,20 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let model = cx.new(|cx| {
+            SelectState::new(Vec::<SharedString>::new(), None, window, cx).searchable(true)
+        });
+        let selection = cx.subscribe_in(&model, window, |this, _, event, _, cx| {
+            let SelectEvent::Confirm(value) = event;
+            this.settings.model = value.as_ref().map(ToString::to_string).unwrap_or_default();
+            if !this.effort_available(&this.settings.effort) {
+                this.settings.effort = "default".into();
+            }
+            cx.notify();
+        });
         Self {
-            model: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .default_value(settings.model.clone())
-                    .placeholder("비워 두면 계정 기본 모델")
-            }),
+            model,
+            _selection: selection,
             codex: cx
                 .new(|cx| InputState::new(window, cx).default_value(settings.codex_path.clone())),
             claude: cx
@@ -51,46 +76,112 @@ impl SettingsView {
             catalog: Vec::new(),
             loading_models: false,
             advanced: false,
+            epoch: 0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            opened_connection: (settings.provider.clone(), settings.model.clone()),
             settings,
             home,
             status: String::new(),
         }
     }
+    pub(crate) fn open(&mut self, settings: Settings, window: &mut Window, cx: &mut Context<Self>) {
+        self.opened_connection = (settings.provider.clone(), settings.model.clone());
+        self.settings = settings;
+        self.codex.update(cx, |v, cx| {
+            v.set_value(self.settings.codex_path.clone(), window, cx)
+        });
+        self.claude.update(cx, |v, cx| {
+            v.set_value(self.settings.claude_path.clone(), window, cx)
+        });
+        self.url.update(cx, |v, cx| {
+            v.set_value(self.settings.ollama_url.clone(), window, cx)
+        });
+        self.guidance.update(cx, |v, cx| {
+            v.set_value(self.settings.guidance.clone(), window, cx)
+        });
+        self.load_models(window, cx);
+    }
+    fn choose_provider(&mut self, provider: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings
+            .models_by_provider
+            .insert(self.settings.provider.clone(), self.settings.model.clone());
+        self.settings.provider = provider.into();
+        self.settings.model = self
+            .settings
+            .models_by_provider
+            .get(provider)
+            .cloned()
+            .unwrap_or_default();
+        self.load_models(window, cx);
+    }
     fn load_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.loading_models {
-            return;
-        }
+        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        self.epoch += 1;
+        let epoch = self.epoch;
+        let cancel = self.cancel.clone();
         self.loading_models = true;
-        self.status = "계정 모델을 확인하고 있습니다".into();
+        self.catalog.clear();
+        self.model
+            .update(cx, |v, cx| v.set_items(Vec::new(), window, cx));
+        self.status = format!(
+            "{}에서 사용할 수 있는 모델을 확인하고 있습니다",
+            self.settings.provider_label()
+        );
         let mut settings = self.settings.clone();
         settings.codex_path = self.codex.read(cx).value().to_string();
-        cx.spawn_in(window, async move |weak, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    crate::provider::models(
-                        &settings,
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    )
-                })
-                .await;
-            let _ = weak.update_in(cx, |this, _, cx| {
-                this.loading_models = false;
+        settings.claude_path = self.claude.read(cx).value().to_string();
+        settings.ollama_url = self.url.read(cx).value().to_string();
+        let key = Some(self.api_key.read(cx).value().to_string());
+        cx.spawn_in(window,async move |weak,cx| {
+            let result=cx.background_executor().spawn(async move {provider::models(&settings,cancel,key)}).await;
+            let _=weak.update_in(cx,|this,window,cx| {
+                if epoch!=this.epoch {return;}
+                this.loading_models=false;
                 match result {
-                    Ok(models) => {
-                        this.catalog = models;
-                        this.status = "계정에서 사용할 수 있는 모델입니다".into()
-                    }
-                    Err(e) => this.status = e.to_string(),
-                };
+                    Ok(models)=>{
+                        let values:Vec<SharedString>=models.iter().filter_map(|m|m["model"].as_str()).map(Into::into).collect();
+                        if let Some(resolved)=models.iter().find(|m|m["aliases"].as_array().is_some_and(|a|a.iter().any(|v|v==&this.settings.model))).and_then(|m|m["model"].as_str()) {
+                            this.settings.model=resolved.into();
+                        }
+                        if this.settings.model.is_empty() {
+                            this.settings.model=models.iter().find(|m|m["isDefault"]==true).and_then(|m|m["model"].as_str()).unwrap_or("").into();
+                        }
+                        let selected=values.iter().find(|s|s.as_ref()==this.settings.model).cloned();
+                        this.model.update(cx,|v,cx|{v.set_items(values,window,cx);if let Some(value)=selected.as_ref(){v.set_selected_value(value,window,cx);}else{v.set_selected_index(None,window,cx);}});
+                        this.status=if models.is_empty(){"사용 가능한 모델이 없습니다. 연결 주소와 계정을 확인하세요.".into()}
+                            else if selected.is_none(){"목록에서 사용할 모델을 선택하세요.".into()}
+                            else{format!("사용 가능한 모델 {}개 · 연결 확인됨",models.len())};
+                        this.catalog=models;
+                        if !this.effort_available(&this.settings.effort) {this.settings.effort="default".into();}
+                    },
+                    Err(e)=>this.status=format!("모델 목록을 불러오지 못했습니다. 연결 설정을 확인한 뒤 새로 고침하세요. {e}"),
+                }
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
         cx.notify();
     }
+    fn effort_available(&self, effort: &str) -> bool {
+        if effort == "default" {
+            return true;
+        }
+        if self.settings.provider == "ollama" {
+            return matches!(effort, "none" | "low" | "medium" | "high");
+        }
+        self.catalog
+            .iter()
+            .find(|m| m["model"] == self.settings.model)
+            .and_then(|m| m["supportedReasoningEfforts"].as_array())
+            .is_some_and(|values| values.iter().any(|v| v["reasoningEffort"] == effort))
+    }
     fn save(&mut self, cx: &mut Context<Self>) {
-        self.settings.model = self.model.read(cx).value().to_string();
+        if !self.can_save(cx) {
+            return;
+        }
+        if let Some(model) = self.model.read(cx).selected_value() {
+            self.settings.model = model.to_string();
+        }
         self.settings
             .models_by_provider
             .insert(self.settings.provider.clone(), self.settings.model.clone());
@@ -99,7 +190,8 @@ impl SettingsView {
         self.settings.ollama_url = self.url.read(cx).value().to_string();
         self.settings.guidance = self.guidance.read(cx).value().to_string();
         let key = self.api_key.read(cx).value().to_string();
-        if !key.trim().is_empty()
+        if self.settings.provider == "ollama"
+            && !key.trim().is_empty()
             && let Err(e) = security_framework::passwords::set_generic_password(
                 "Scholarly Native Ollama",
                 self.settings.ollama_url.trim_end_matches('/'),
@@ -116,40 +208,65 @@ impl SettingsView {
         };
         cx.notify();
     }
+    fn can_save(&self, cx: &App) -> bool {
+        !self.loading_models
+            && (self.model.read(cx).selected_value().is_some()
+                || self.opened_connection
+                    == (self.settings.provider.clone(), self.settings.model.clone()))
+    }
 }
 impl Render for SettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().id("settings-scroll").overflow_y_scroll().size_full().child(div().max_w(rems(45.)).mx_auto().p_6().flex().flex_col().gap_4()
-        .child(div().text_xl().child("읽기 설정"))
-        .child(div().text_sm().text_color(cx.theme().muted_foreground).child(concat!("Scholarly Native · ", env!("CARGO_PKG_VERSION"))))
-        .child("AI 연결").child(div().flex().gap_2().children([("codex","Codex 구독"),("claude","Claude 구독"),("ollama","Ollama")].into_iter().map(|(provider,label)|Button::new(provider).selected(self.settings.provider==provider).label(label).on_click(cx.listener(move|this,_,window,cx|{this.settings.models_by_provider.insert(this.settings.provider.clone(),this.model.read(cx).value().to_string());this.settings.provider=provider.into();let next=this.settings.models_by_provider.get(provider).cloned().unwrap_or_default();this.model.update(cx,|input,cx|input.set_value(next,window,cx));this.catalog.clear();cx.notify();})))))
-        .child("모델").child(Input::new(&self.model)).when(self.settings.provider=="codex",|view|view.child(Button::new("load-models").small().label("계정 모델 불러오기").disabled(self.loading_models).on_click(cx.listener(|this,_,window,cx|this.load_models(window,cx)))).child(div().flex().flex_wrap().gap_2().children(self.catalog.iter().filter_map(|model|model["model"].as_str()).map(|name|{let name=name.to_owned();Button::new(SharedString::from(name.clone())).small().label(name.clone()).on_click(cx.listener(move|this,_,window,cx|{this.model.update(cx,|input,cx|input.set_value(name.clone(),window,cx));cx.notify();}))}))))
-        .child("추론 강도").child(div().flex().gap_2().flex_wrap().children([("low","낮음"),("default","기본값"),("medium","중간"),("high","높음"),("none","끄기")].into_iter().map(|(effort,label)|Button::new(effort).small().disabled(effort=="none" && this_none_disabled(&self.settings,&self.catalog,&self.model.read(cx).value())).selected(self.settings.effort==effort).label(label).on_click(cx.listener(move|this,_,_,cx|{this.settings.effort=effort.into();cx.notify();})))))
-        .child(div().text_sm().text_color(cx.theme().muted_foreground).child("모델이 지원하는 설정만 사용합니다. ‘끄기’를 지원하지 않으면 실행 전에 알려 드립니다."))
-        .child("노트 언어").child(div().flex().gap_2().children([("ko","한국어"),("en","English")].into_iter().map(|(lang,label)|Button::new(lang).small().selected(self.settings.language==lang).label(label).on_click(cx.listener(move|this,_,_,cx|{this.settings.language=lang.into();cx.notify();})))))
-        .child("추가 읽기 지침").child(Textarea::new(&self.guidance).h(rems(7.)))
-        .child(Button::new("advanced-settings").small().ghost().label(if self.advanced{"고급 연결 설정 접기"}else{"고급 연결 설정…"}).on_click(cx.listener(|this,_,_,cx|{this.advanced = !this.advanced;cx.notify();})))
-        .when(self.advanced,|view|view.child("Codex 실행 파일 · 비워 두면 자동 탐색").child(Input::new(&self.codex)).child("Claude 실행 파일 · 비워 두면 자동 탐색").child(Input::new(&self.claude)))
-        .when(self.settings.provider=="ollama",|view|view.child("Ollama 주소").child(Input::new(&self.url)).child("Ollama API 키 · macOS 키체인에 저장").child(Input::new(&self.api_key).content_type(InputContentType::Password)))
-        .child(div().text_sm().text_color(cx.theme().muted_foreground).child("학습 노트는 원문 대조 전 상태로 먼저 저장합니다. 읽기 화면에서 원문 대조를 별도로 실행할 수 있습니다."))
-        .child(self.status.clone()).child(Button::new("save-settings").primary().label("저장").on_click(cx.listener(|this,_,_,cx|this.save(cx)))))
-    }
-}
-
-fn this_none_disabled(settings: &Settings, catalog: &[serde_json::Value], model: &str) -> bool {
-    match settings.provider.as_str() {
-        "claude" => true,
-        "codex" => !catalog
-            .iter()
-            .find(|m| {
-                if model.is_empty() {
-                    m["isDefault"] == true
-                } else {
-                    m["model"] == model
-                }
-            })
-            .and_then(|m| m["supportedReasoningEfforts"].as_array())
-            .is_some_and(|values| values.iter().any(|v| v["reasoningEffort"] == "none")),
-        _ => false,
+        let providers = [
+            ("codex", "Codex 구독"),
+            ("claude", "Claude 구독"),
+            ("ollama", "Ollama"),
+        ];
+        let efforts = [
+            ("default", "모델 기본값"),
+            ("low", "낮음"),
+            ("medium", "중간"),
+            ("high", "높음"),
+            ("xhigh", "매우 높음"),
+            ("max", "최대"),
+            ("none", "끄기"),
+        ];
+        div().id("settings-scroll").overflow_y_scroll().size_full().child(
+            div().max_w(rems(45.)).mx_auto().p_6().flex().flex_col().gap_6()
+            .child(div().flex().flex_col().gap_2().child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("읽기 설정"))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("사용할 AI와 노트 작성 언어를 선택합니다. 저장 후 시작하는 작업에 적용됩니다.")))
+            .child(div().flex().flex_col().gap_3().child("AI 연결")
+                .child(RadioGroup::horizontal("provider").selected_index(providers.iter().position(|(p,_)|*p==self.settings.provider))
+                    .children(providers.map(|(id,label)|Radio::new(id).label(label)))
+                    .on_change(cx.listener(move|this,index: &usize,window,cx|this.choose_provider(providers[*index].0,window,cx)))))
+            .when(self.settings.provider=="ollama",|view|view.child(div().flex().flex_col().gap_2()
+                .child("Ollama 주소 · /v1 포함").child(Input::new(&self.url))
+                .child("Ollama API 키 · macOS 키체인에 저장").child(Input::new(&self.api_key).content_type(InputContentType::Password))))
+            .child(div().flex().flex_col().gap_2().child("모델")
+                .child(div().flex().gap_2().child(Select::new(&self.model).accessibility_label("사용할 AI 모델").placeholder(if self.loading_models{"모델 불러오는 중…"}else{"모델 선택"}).disabled(self.loading_models).flex_1().min_w_0())
+                    .child(Button::new("load-models").label("새로 고침").disabled(self.loading_models).on_click(cx.listener(|this,_,window,cx|this.load_models(window,cx)))))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(self.status.clone())))
+            .child(div().flex().flex_col().gap_3().child("추론 강도")
+                .child(RadioGroup::horizontal("reasoning").flex_wrap().selected_index(efforts.iter().position(|(e,_)|*e==self.settings.effort))
+                    .children(efforts.map(|(id,label)|Radio::new(id).label(label).disabled(!self.effort_available(id))))
+                    .on_change(cx.listener(move|this,index: &usize,_,cx|{this.settings.effort=efforts[*index].0.into();cx.notify();})))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("선택한 모델이 지원하는 항목을 사용합니다. 모델 목록 조회에는 노트 생성을 요청하지 않습니다.")))
+            .child(div().flex().flex_col().gap_3().child("노트 작성 언어")
+                .child(RadioGroup::horizontal("note-language").selected_index(Some(usize::from(self.settings.language=="en")))
+                    .child(Radio::new("ko").label("한국어로 작성")).child(Radio::new("en").label("영어로 작성"))
+                    .on_change(cx.listener(|this,index: &usize,_,cx|{this.settings.language=if *index==1{"en"}else{"ko"}.into();cx.notify();})))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!("새 노트는 {}로 작성합니다. 기존 노트의 언어는 바뀌지 않습니다.",self.settings.language_label()))))
+            .child(div().flex().flex_col().gap_3().child("읽기 화면")
+                .child(RadioGroup::horizontal("reader-appearance").selected_index(Some(usize::from(self.settings.reader_appearance!="paper")))
+                    .child(Radio::new("paper").label("따뜻한 종이색")).child(Radio::new("night").label("어두운 청회색"))
+                    .on_change(cx.listener(|this,index: &usize,_,cx|{this.settings.reader_appearance=if *index==1{"night"}else{"paper"}.into();cx.notify();})))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("서재 색상과 별도로, 요약을 읽는 화면에 적용합니다.")))
+            .child(div().flex().flex_col().gap_2().child("추가 읽기 지침").child(Textarea::new(&self.guidance).h(rems(7.))))
+            .child(Button::new("advanced-settings").small().ghost().label(if self.advanced{"고급 연결 설정 접기"}else{"고급 연결 설정…"}).on_click(cx.listener(|this,_,_,cx|{this.advanced = !this.advanced;cx.notify();})))
+            .when(self.advanced,|view|view.child(div().flex().flex_col().gap_2().child("Codex 실행 파일 · 비워 두면 자동 탐색").child(Input::new(&self.codex)).child("Claude 실행 파일 · 비워 두면 자동 탐색").child(Input::new(&self.claude))))
+            .child(div().flex().items_center().justify_between().gap_4()
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(concat!("Scholarly Native ",env!("CARGO_PKG_VERSION"))))
+                .child(Button::new("save-settings").primary().label("설정 저장").disabled(!self.can_save(cx)).on_click(cx.listener(|this,_,_,cx|this.save(cx)))))
+        )
     }
 }

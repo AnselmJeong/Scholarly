@@ -180,7 +180,28 @@ pub(crate) fn read_note(pdf: &Path) -> Result<(String, String)> {
             }
         })
         .unwrap_or(status);
-    Ok((body, status.into()))
+    let provenance = note_provenance(&meta);
+    Ok((
+        body,
+        if provenance.is_empty() {
+            status.into()
+        } else {
+            format!("{status} · 이 노트: {provenance}")
+        },
+    ))
+}
+pub(crate) fn note_provenance(meta: &Value) -> String {
+    let model = meta["generator_model"].as_str().unwrap_or("");
+    let language = match meta["output_language"].as_str() {
+        Some("en") => "영어",
+        Some("ko") => "한국어",
+        _ => "언어 기록 없음",
+    };
+    if model.is_empty() {
+        String::new()
+    } else {
+        format!("{model} · {language}")
+    }
 }
 pub(crate) fn parse_note(text: &str) -> Result<(Value, String)> {
     let text = text.replace("\r\n", "\n");
@@ -191,6 +212,16 @@ pub(crate) fn parse_note(text: &str) -> Result<(Value, String)> {
         return Ok((serde_json::to_value(value)?, body.trim().to_owned()));
     }
     Ok((Value::Null, text.trim().into()))
+}
+pub(crate) fn learning_prompt(language: &str) -> String {
+    if language == "en" {
+        PROMPT
+            .replace("한국어", "영어")
+            .replace("1,200~1,800어절", "1,800~2,600단어")
+            + "\nWrite the entire explanatory body in English. Keep the seven required section headings exactly as specified."
+    } else {
+        PROMPT.into()
+    }
 }
 pub(crate) fn normalize(text: &str) -> String {
     let text = text
@@ -313,13 +344,7 @@ pub(crate) fn generate(
         }
     }
     on_status("학습 노트를 작성하고 있습니다");
-    let system = if settings.language == "en" {
-        format!(
-            "{PROMPT}\nWrite the entire body in English; retain the required headings. Aim for explanatory depth, usually 1800–2600 words."
-        )
-    } else {
-        PROMPT.into()
-    };
+    let system = learning_prompt(&settings.language);
     let metadata = json!({"title":article.title,"authors":article.authors,"year":article.year,"doi":article.doi});
     let user = format!(
         "<verified_metadata>{metadata}</verified_metadata>\n<preferences>{}</preferences>\n<source_material references_omitted=\"{}\">{material}</source_material>",
@@ -330,12 +355,26 @@ pub(crate) fn generate(
         bail!("추가 지침과 본문이 문맥 한도를 넘었습니다.")
     }
     let mut first_text_ms = None;
-    let result = provider::complete(settings, &system, &user, cancel.clone(), &mut |text| {
-        if first_text_ms.is_none() && text.len() >= 200 {
-            first_text_ms = Some(start.elapsed().as_millis());
-        }
-        on_text(text);
-    })?;
+    let result = provider::complete_with_model(
+        settings,
+        &system,
+        &user,
+        cancel.clone(),
+        &mut |text| {
+            if first_text_ms.is_none() && text.len() >= 200 {
+                first_text_ms = Some(start.elapsed().as_millis());
+            }
+            on_text(text);
+        },
+        &mut |model| {
+            on_status(&format!(
+                "{} · {} · {}로 작성 중",
+                settings.provider_label(),
+                model,
+                settings.language_label()
+            ))
+        },
+    )?;
     let body = normalize(&result.text);
     validate_body(&body, doc.page_count)?;
     check_cancel(&cancel)?;
@@ -352,7 +391,7 @@ pub(crate) fn generate(
         .context("논문이 선택한 폴더 밖에 있습니다")?
         .to_string_lossy()
         .replace('\\', "/");
-    let meta = json!({"schema_version":"scholarly-learning/v1","source_relpath":relative,"source_sha256":source_hash,"source_page_count":doc.page_count,"source_page_start":1,"source_page_end":doc.page_count,"source_locator_scheme":"pdf_physical_page_v1","body_sha256":hash(body.as_bytes()),"title":article.title,"authors":article.authors,"year":article.year,"doi":article.doi,"generation_status":"complete","structural_validation_status":"passed","factual_review_status":"not_run","prompt_version":"scholarly-learning-v1","prompt_sha256":hash(PROMPT),"extraction_version":"pdfkit-pages-v2-references-omitted","generator_model":format!("{}:{}",settings.provider,result.model),"resolved_model":result.model,"reasoning_effort":result.effort,"output_language":settings.language,"generated_at_ms":now(),"references_omitted":doc.references_omitted,"generation_audit":{"duration_ms":start.elapsed().as_millis(),"first_text_ms":first_text_ms,"requests":requests,"usage":result.usage}});
+    let meta = json!({"schema_version":"scholarly-learning/v1","source_relpath":relative,"source_sha256":source_hash,"source_page_count":doc.page_count,"source_page_start":1,"source_page_end":doc.page_count,"source_locator_scheme":"pdf_physical_page_v1","body_sha256":hash(body.as_bytes()),"title":article.title,"authors":article.authors,"year":article.year,"doi":article.doi,"generation_status":"complete","structural_validation_status":"passed","factual_review_status":"not_run","prompt_version":"scholarly-learning-v1","prompt_sha256":hash(&system),"extraction_version":"pdfkit-pages-v2-references-omitted","generator_model":format!("{}:{}",settings.provider,result.model),"resolved_model":result.model,"reasoning_effort":result.effort,"output_language":settings.language,"generated_at_ms":now(),"references_omitted":doc.references_omitted,"generation_audit":{"duration_ms":start.elapsed().as_millis(),"first_text_ms":first_text_ms,"requests":requests,"usage":result.usage}});
     atomic_write(
         &target,
         format!("---\n{}---\n\n{body}\n", serde_yaml::to_string(&meta)?).as_bytes(),

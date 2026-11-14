@@ -17,12 +17,40 @@ pub(crate) struct Settings {
     pub(crate) models_by_provider: std::collections::BTreeMap<String, String>,
     pub(crate) effort: String,
     pub(crate) language: String,
+    pub(crate) reader_appearance: String,
     pub(crate) guidance: String,
     pub(crate) codex_path: String,
     pub(crate) claude_path: String,
     pub(crate) ollama_url: String,
 }
 impl Settings {
+    pub(crate) fn provider_label(&self) -> &str {
+        match self.provider.as_str() {
+            "codex" => "Codex",
+            "claude" => "Claude",
+            "ollama" => "Ollama",
+            _ => "AI 미설정",
+        }
+    }
+    pub(crate) fn language_label(&self) -> &str {
+        if self.language == "en" {
+            "영어"
+        } else {
+            "한국어"
+        }
+    }
+    pub(crate) fn generation_label(&self) -> String {
+        format!(
+            "{} · {} · {}",
+            self.provider_label(),
+            if self.model.is_empty() {
+                "계정 기본 모델"
+            } else {
+                &self.model
+            },
+            self.language_label()
+        )
+    }
     pub(crate) fn load(home: &Path) -> Result<Self> {
         fs::create_dir_all(home)?;
         let current = home.join("settings.json");

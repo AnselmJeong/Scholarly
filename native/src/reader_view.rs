@@ -62,6 +62,7 @@ pub(crate) struct ReaderView {
     review_text: String,
     notice: String,
     job_action: String,
+    job_context: String,
     busy: bool,
     cancel: provider::Cancel,
     sender: mpsc::Sender<Update>,
@@ -167,6 +168,7 @@ impl ReaderView {
             review_text: String::new(),
             notice: String::new(),
             job_action: String::new(),
+            job_context: String::new(),
             busy: false,
             cancel: Arc::new(AtomicBool::new(false)),
             sender,
@@ -473,6 +475,7 @@ impl ReaderView {
         self.notice.clear();
         self.busy = true;
         self.job_action = action.into();
+        self.job_context = self.settings.generation_label();
         self.cancel = Arc::new(AtomicBool::new(false));
         self.status = match action {
             "review" => "원문과 대조하고 있습니다",
@@ -963,7 +966,7 @@ impl Render for ReaderView {
                 self.html
                     .as_mut()
                     .unwrap()
-                    .element(cx.theme().is_dark(), self.font_size),
+                    .element(self.settings.reader_appearance != "paper", self.font_size),
             )
         } else {
             None
@@ -1370,6 +1373,18 @@ impl Render for ReaderView {
                         ),
                 )
             })
+            .child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(if self.busy {
+                        format!("처리 중 · {}", self.job_context)
+                    } else {
+                        format!("다음 작성 · {}", self.settings.generation_label())
+                    }),
+            )
             .child(reader)
             .child(
                 div()

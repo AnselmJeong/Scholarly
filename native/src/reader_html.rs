@@ -24,6 +24,7 @@ pub(crate) fn escape(text: &str) -> String {
 }
 pub(crate) fn markup(body: &str) -> String {
     let body = reader_format::display_body(body);
+    let (body, math) = crate::reader_math::protect(&body);
     let parser = Parser::new_ext(&body, markdown_options()).map(|event| match event {
         Event::Html(text) | Event::InlineHtml(text) => Event::Text(text),
         Event::InlineMath(text) => Event::Html(
@@ -66,12 +67,14 @@ pub(crate) fn markup(body: &str) -> String {
     static STANDALONE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r#"<p><span class="math-inline" data-tex="([^"]*)"></span></p>"#).unwrap()
     });
-    STANDALONE
-        .replace_all(
-            &result,
-            "<div class=\"math-display\" data-tex=\"$1\"></div>",
-        )
-        .into_owned()
+    math.restore(
+        STANDALONE
+            .replace_all(
+                &result,
+                "<div class=\"math-display\" data-tex=\"$1\"></div>",
+            )
+            .into_owned(),
+    )
 }
 fn visual(asset: &Asset) -> Result<String> {
     let v = &asset.visual;
@@ -184,6 +187,8 @@ fn explanations(body: &str) -> Vec<Explanation> {
 }
 
 pub(crate) fn content(body: &str, assets: &[Asset]) -> Result<String> {
+    let (protected, math) = crate::reader_math::protect(&crate::reading::normalize(body));
+    let body = protected.as_str();
     let paragraphs = explanations(body);
     let mut groups = vec![Vec::new(); paragraphs.len()];
     let mut shown = HashSet::new();
@@ -258,7 +263,7 @@ pub(crate) fn content(body: &str, assets: &[Asset]) -> Result<String> {
     if !assets.is_empty() && assets.iter().any(|a| !shown.contains(&a.visual.label)) {
         html.push_str("</details>");
     }
-    Ok(html)
+    Ok(math.restore(html))
 }
 pub(crate) fn prepare(body: &str, pdf: &Path, home: &Path) -> Result<String> {
     let assets = source_visuals::extract(pdf, home)?;
@@ -294,7 +299,7 @@ pub(crate) fn shell(content: &str, title: &str) -> String {
     format!(
         r#"<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-scholarly-reader-v1'; font-src data:; img-src data:; base-uri 'none'; form-action 'none'"><title>{}</title><style>{}
 {}</style></head><body><main></main><dialog aria-label="원문 자료 확대"><div class="zoom-toolbar"><button data-zoom-out aria-label="축소">−</button><span data-zoom-label></span><button data-zoom-in aria-label="확대">+</button><button data-zoom-fit>맞춤</button><button data-close>닫기 · Esc</button></div><div class="zoom-viewport" tabindex="0"><img alt=""></div></dialog><script nonce="scholarly-reader-v1">{}</script><script nonce="scholarly-reader-v1">{}
-renderNote({},window.matchMedia('(prefers-color-scheme:dark)').matches,17,true);send({{ready:true}});</script></body></html>"#,
+renderNote({},true,17,true);send({{ready:true}});</script></body></html>"#,
         escape(title),
         include_str!("../assets/reader/katex-embedded.css"),
         include_str!("../assets/reader/reader.css"),

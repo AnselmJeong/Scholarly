@@ -495,3 +495,100 @@ fn visual_reference_lists_preserve_number_kind_and_supplement() {
         expected.map(|(kind, number)| (kind.to_string(), number.to_string()))
     );
 }
+
+#[test]
+fn available_models_use_provider_catalogs_without_generation() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_codex_dir, codex) = fake_codex("normal");
+    let models = provider::models(&codex, Arc::new(AtomicBool::new(false)), None).unwrap();
+    assert_eq!(models[0]["model"], "fixture");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("claude");
+    fs::write(&path, r#"#!/usr/bin/python3
+import json,sys,time
+v=json.loads(sys.stdin.readline())
+assert v['type']=='control_request' and v['request']['subtype']=='initialize'
+assert '--no-session-persistence' in sys.argv and '--strict-mcp-config' in sys.argv
+print(json.dumps({'type':'control_response','response':{'request_id':v['request_id'],'response':{'models':[{'value':'default','resolvedModel':'claude-fixture','displayName':'Fixture','supportedEffortLevels':['low','high']},{'value':'alias','resolvedModel':'claude-fixture'}]}}}),flush=True)
+time.sleep(5)
+"#).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let claude = Settings {
+        provider: "claude".into(),
+        claude_path: path.to_string_lossy().into(),
+        ..Default::default()
+    };
+    let models = provider::models(&claude, Arc::new(AtomicBool::new(false)), None).unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["model"], "claude-fixture");
+    assert_eq!(models[0]["isDefault"], true);
+    assert_eq!(
+        models[0]["aliases"],
+        serde_json::json!(["default", "alias"])
+    );
+    assert_eq!(
+        models[0]["supportedReasoningEfforts"][1]["reasoningEffort"],
+        "high"
+    );
+
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", server.local_addr().unwrap());
+    let task = std::thread::spawn(move || {
+        let (mut socket, _) = server.accept().unwrap();
+        let mut buffer = [0; 4096];
+        let size = socket.read(&mut buffer).unwrap();
+        let request = String::from_utf8_lossy(&buffer[..size]);
+        assert!(request.starts_with("GET /v1/models HTTP/1.1"));
+        assert!(
+            request
+                .to_lowercase()
+                .contains("authorization: bearer test-key")
+        );
+        let body = r#"{"data":[{"id":"installed-model"},{"id":"cloud-model"}]}"#;
+        write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+    });
+    let ollama = Settings {
+        provider: "ollama".into(),
+        ollama_url: url,
+        ..Default::default()
+    };
+    let models = provider::models(
+        &ollama,
+        Arc::new(AtomicBool::new(false)),
+        Some("test-key".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        models
+            .iter()
+            .map(|v| v["model"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["installed-model", "cloud-model"]
+    );
+    task.join().unwrap();
+}
+
+#[test]
+fn language_and_saved_note_provenance_do_not_follow_unrelated_settings() {
+    assert!(reading::learning_prompt("ko").contains("한국어 학습 노트"));
+    let english = reading::learning_prompt("en");
+    assert!(english.contains("영어 학습 노트"));
+    assert!(!english.contains("한국어"));
+    assert!(english.contains("# 3. Section-by-Section Digest"));
+    assert_eq!(
+        reading::note_provenance(
+            &serde_json::json!({"generator_model":"codex:saved-model","output_language":"ko"})
+        ),
+        "codex:saved-model · 한국어"
+    );
+    assert_eq!(reading::note_provenance(&serde_json::Value::Null), "");
+    assert_eq!(
+        crate::source_visuals::references("Figures A2–A4; Table 1"),
+        vec![
+            ("figure".into(), "A2".into()),
+            ("figure".into(), "A3".into()),
+            ("figure".into(), "A4".into()),
+            ("table".into(), "1".into())
+        ]
+    );
+}

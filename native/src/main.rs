@@ -1,5 +1,6 @@
 mod html_surface;
 mod reader_html;
+mod reader_math;
 mod source_visuals;
 use gpui_kit::prelude::FluentBuilder;
 mod evaluation;
@@ -207,9 +208,13 @@ impl Scholarly {
             .update(cx, |reader, cx| reader.start("generate", window, cx));
         cx.notify();
     }
-    fn preferences(&mut self, _: &ShowSettings, _: &mut Window, cx: &mut Context<Self>) {
+    fn preferences(&mut self, _: &ShowSettings, window: &mut Window, cx: &mut Context<Self>) {
         self.queue_visible = false;
         self.settings_visible = !self.settings_visible;
+        if self.settings_visible {
+            self.preferences
+                .update(cx, |view, cx| view.open(self.settings.clone(), window, cx));
+        }
         cx.notify();
     }
     fn sidebar(&mut self, _: &ToggleLibrary, _: &mut Window, cx: &mut Context<Self>) {

@@ -289,6 +289,7 @@ impl Render for QueueView {
         let count = |state: &str| self.queue.items.iter().filter(|i| i.state == state).count();
         div().id("queue-panel").size_full().overflow_y_scroll().p_6().flex().flex_col().gap_4().child(div().text_2xl().child("폴더 학습 노트"))
         .child("기존 노트를 건너뛰거나, 모든 노트를 다시 작성할 수 있습니다. 재작성한 노트의 이전 버전은 보관됩니다.")
+        .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!("{} · {}",if self.busy {"처리 중"} else {"작성 설정"},self.settings.generation_label())))
         .child(div().flex().flex_wrap().gap_2().child(Button::new("queue-missing").label("없는 노트만 준비").disabled(self.busy).on_click(cx.listener(|this,_,_,cx|this.prepare(false,cx)))).child(Button::new("queue-rewrite").label("전체 재작성 준비").disabled(self.busy).on_click(cx.listener(|this,_,_,cx|this.prepare(true,cx)))))
         .child(format!("{}편 · 완료 {} · 기존 노트 {} · 대기 {} · 진행 {} · 실패 {}",self.queue.items.len(),count("complete"),count("skipped"),count("pending")+count("cancelled"),count("running"),count("failed")))
         .child(div().text_sm().text_color(cx.theme().muted_foreground).child(self.queue.root.clone()))

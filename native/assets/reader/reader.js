@@ -17,6 +17,31 @@ function renderNote(content, dark, fontSize, reset) {
     }
   });
   document.documentElement.dataset.mathErrors = String(errors);
+  // Keep precise source locators, but give them a quieter typographic role.
+  const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) { return node.parentElement.closest('code,pre,[data-tex],a,button,figcaption') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; }
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(node => {
+    const matches = [...node.textContent.matchAll(/\[Source:\s*([^\]]+)\]/gi)];
+    if (!matches.length) return;
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    matches.forEach(match => {
+      fragment.append(document.createTextNode(node.textContent.slice(offset, match.index)));
+      const page = match[1].match(/\bp{1,2}\.\s*(\d+)/i);
+      const ref = document.createElement(page && window.ipc ? 'button' : 'span');
+      ref.className = 'source-ref';
+      ref.textContent = '원문 · ' + match[1];
+      ref.title = match[0];
+      if (page && window.ipc) { ref.dataset.page = page[1]; ref.setAttribute('aria-label', '원문 ' + match[1] + ' 열기'); }
+      fragment.append(ref);
+      offset = match.index + match[0].length;
+    });
+    fragment.append(document.createTextNode(node.textContent.slice(offset)));
+    node.replaceWith(fragment);
+  });
   main.querySelectorAll('table').forEach(table => {
     const wrapper = document.createElement('div'); wrapper.className='table-scroll'; wrapper.tabIndex=0; wrapper.setAttribute('role','region'); wrapper.setAttribute('aria-label','표');
     table.replaceWith(wrapper); wrapper.append(table);

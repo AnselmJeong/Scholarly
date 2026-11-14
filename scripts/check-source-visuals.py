@@ -67,13 +67,20 @@ for y in [600, 430]:
 p3 += text(235, 410, "Time (s)")+"40 390 m 560 390 l S\n"+text(40, 350, "Following prose.")
 # A mention inside prose is not a figure caption.
 p4 = text(40, 700, "Figure 6 illustrates a result mentioned in the body.")
+# Unpunctuated captions and text-glyph dotted rules (journal table style).
+p5 = text(40,750,"Table 3 Predictions under different mappings.")
+for y in [720,690,610]:
+    p5 += text(40,y,"."*170)
+p5 += text(45,700,"Mapping       Similarity       Effort")+text(45,660,"Identity       unchanged        higher")+text(45,630,"Marginal       conditional      lower")
+p5 += text(40,570,"This unrelated paragraph continues below the table and refers to")+text(40,558,"Fig. 7: a hypothetical scenario, not a caption.")
+p6 = "100 400 400 300 re S\n"+text(100,380,"Figure A4 Appendix diagram without punctuation.")
 helper = str(Path(sys.argv[1] if len(sys.argv)>1 else "native/target/pdf-helper").resolve())
 with tempfile.TemporaryDirectory() as directory:
     source = Path(directory)/"geometry.pdf"
-    pdf(source, [p1, p2, p3, p4])
+    pdf(source, [p1, p2, p3, p4, p5, p6])
     visuals = json.loads(subprocess.check_output([helper, "visuals", str(source)]))
     by_label = {(v["page"],v["label"]):v for v in visuals}
-    assert len(visuals)==4, visuals
+    assert len(visuals)==6, visuals
     assert all(v["cropped"] for v in visuals), visuals
     t = by_label[1,"Table 2"]
     assert contains(t,40,720) and contains(t,560,630) and contains(t,45,615), t
@@ -84,8 +91,13 @@ with tempfile.TemporaryDirectory() as directory:
     side=by_label[3,"Figure 2"]
     assert contains(side,230,740) and contains(side,550,430), side
     assert not contains(side,100,745) and not contains(side,250,350), side
+    dotted=by_label[5,"Table 3"]
+    assert contains(dotted,45,700) and contains(dotted,45,630), dotted
+    assert not contains(dotted,45,570), dotted
+    assert contains(by_label[6,"Figure A4"],100,700)
+    assert not any(v['label']=="Figure 7" for v in visuals), visuals
     for i,v in enumerate(visuals):
         target=Path(directory)/f"{i}.png"
         subprocess.run([helper,"crop",str(source),str(v["page"]),str(target),*map(str,v["rect"])],check=True)
         assert target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-    print("4 extracted visuals: table notes, segmented grid, separate figure, side-caption panels; prose excluded; PNG crops valid")
+    print("6 extracted visuals: table notes, segmented grid, separate figure, side-caption panels, dotted text rules, appendix figure; prose excluded; PNG crops valid")

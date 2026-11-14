@@ -291,10 +291,121 @@ fn catalog(rpc: &mut Rpc) -> Result<Vec<Value>> {
     }
     Ok(all)
 }
-pub(crate) fn models(settings: &Settings, cancel: Cancel) -> Result<Vec<Value>> {
+pub(crate) fn models(
+    settings: &Settings,
+    cancel: Cancel,
+    key: Option<String>,
+) -> Result<Vec<Value>> {
+    match settings.provider.as_str() {
+        "claude" => return claude_models(settings, cancel),
+        "ollama" => return ollama_models(settings, cancel, key),
+        "codex" => {}
+        other => bail!("지원하지 않는 제공자: {other}"),
+    }
     let temp = tempfile::tempdir()?;
     let mut rpc = Rpc::start(settings, temp.path(), cancel)?;
     catalog(&mut rpc)
+}
+
+fn claude_models(settings: &Settings, cancel: Cancel) -> Result<Vec<Value>> {
+    let temp = tempfile::tempdir()?;
+    let mut cmd = command(&executable(&settings.claude_path, "claude")?);
+    cmd.current_dir(temp.path()).args([
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+        "--no-session-persistence",
+        "--setting-sources",
+        "",
+    ]);
+    let mut child = cmd.spawn()?;
+    record_child(child.id());
+    let mut input = child.stdin.take().unwrap();
+    writeln!(
+        input,
+        "{}",
+        json!({"type":"control_request","request_id":"models","request":{"subtype":"initialize","hooks":null}})
+    )?;
+    let output = child.stdout.take().unwrap();
+    let _guard = ChildGuard(child);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(output).lines() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        check_cancel(&cancel)?;
+        if Instant::now() > deadline {
+            bail!("Claude 모델 목록을 불러오는 시간이 초과되었습니다")
+        }
+        match rx.recv_timeout(Duration::from_millis(80)) {
+            Ok(line) => {
+                let value: Value = serde_json::from_str(&line?)?;
+                if value["type"] == "control_response"
+                    && value["response"]["request_id"] == "models"
+                {
+                    let list = value
+                        .pointer("/response/response/models")
+                        .and_then(Value::as_array)
+                        .context("Claude 모델 목록을 읽지 못했습니다")?;
+                    let mut models: Vec<Value> = Vec::new();
+                    for m in list {
+                        let Some(id) = m["resolvedModel"].as_str().or_else(|| m["value"].as_str())
+                        else {
+                            continue;
+                        };
+                        if let Some(existing) = models.iter_mut().find(|v| v["model"] == id) {
+                            existing["aliases"]
+                                .as_array_mut()
+                                .unwrap()
+                                .push(m["value"].clone());
+                            continue;
+                        }
+                        models.push(json!({"model":id,"aliases":[m["value"]],"displayName":m["displayName"],"isDefault":m["value"]=="default","supportedReasoningEfforts":m["supportedEffortLevels"].as_array().map(|v|v.iter().map(|e|json!({"reasoningEffort":e})).collect::<Vec<_>>()).unwrap_or_default()}));
+                    }
+                    return Ok(models);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Claude 모델 목록 연결이 종료되었습니다")
+            }
+            Err(_) => {}
+        }
+    }
+}
+fn ollama_models(settings: &Settings, cancel: Cancel, key: Option<String>) -> Result<Vec<Value>> {
+    let key = key.filter(|v| !v.trim().is_empty()).or_else(|| {
+        security_framework::passwords::get_generic_password(
+            "Scholarly Native Ollama",
+            settings.ollama_url.trim_end_matches('/'),
+        )
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+    });
+    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+        let operation=async {
+            let client=reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build()?;
+            let mut request=client.get(format!("{}/models",settings.ollama_url.trim_end_matches('/')));
+            if let Some(key)=key {request=request.bearer_auth(key);}
+            let data:Value=request.send().await?.error_for_status()?.json().await?;
+            let list=data["data"].as_array().context("Ollama 모델 목록을 읽지 못했습니다")?;
+            Ok(list.iter().filter_map(|m|m["id"].as_str()).map(|id|json!({"model":id,"displayName":id})).collect())
+        };
+        let cancelled=async {loop{tokio::time::sleep(Duration::from_millis(50)).await;if check_cancel(&cancel).is_err(){break;}}};
+        tokio::select!{result=operation=>result,_=cancelled=>Err(anyhow!("모델 조회를 취소했습니다"))}
+    })
 }
 fn codex(
     settings: &Settings,
@@ -302,6 +413,7 @@ fn codex(
     user: &str,
     cancel: Cancel,
     on_text: &mut dyn FnMut(&str),
+    on_model: &mut dyn FnMut(&str),
 ) -> Result<Completion> {
     let temp = tempfile::tempdir()?;
     let mut rpc = Rpc::start(settings, temp.path(), cancel)?;
@@ -368,6 +480,7 @@ fn codex(
         .as_str()
         .context("Thread ID missing")?
         .to_owned();
+    on_model(&model);
     let started = rpc.request("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":user,"text_elements":[]}],"effort":effort,"summary":"none","serviceTierForTurn":"default"}))?;
     let turn_id = started["turn"]["id"]
         .as_str()
@@ -453,6 +566,7 @@ fn claude(
     user: &str,
     cancel: Cancel,
     on_text: &mut dyn FnMut(&str),
+    on_model: &mut dyn FnMut(&str),
 ) -> Result<Completion> {
     let temp = tempfile::tempdir()?;
     let mut cmd = command(&executable(&settings.claude_path, "claude")?);
@@ -504,6 +618,12 @@ fn claude(
         match rx.recv_timeout(Duration::from_millis(80)) {
             Ok(line) => {
                 let v: Value = serde_json::from_str(&line?)?;
+                if v["type"] == "system"
+                    && v["subtype"] == "init"
+                    && let Some(model) = v["model"].as_str()
+                {
+                    on_model(model);
+                }
                 if v["type"] == "stream_event" && v["event"]["delta"]["type"] == "text_delta" {
                     text.push_str(v["event"]["delta"]["text"].as_str().unwrap_or(""));
                     if text.len() > 8 * 1024 * 1024 {
@@ -603,11 +723,24 @@ pub(crate) fn complete(
     cancel: Cancel,
     on_text: &mut dyn FnMut(&str),
 ) -> Result<Completion> {
+    complete_with_model(settings, system, user, cancel, on_text, &mut |_| {})
+}
+pub(crate) fn complete_with_model(
+    settings: &Settings,
+    system: &str,
+    user: &str,
+    cancel: Cancel,
+    on_text: &mut dyn FnMut(&str),
+    on_model: &mut dyn FnMut(&str),
+) -> Result<Completion> {
     check_cancel(&cancel)?;
     match settings.provider.as_str() {
-        "codex" => codex(settings, system, user, cancel, on_text),
-        "claude" => claude(settings, system, user, cancel, on_text),
-        "ollama" => ollama(settings, system, user, cancel, on_text),
+        "codex" => codex(settings, system, user, cancel, on_text, on_model),
+        "claude" => claude(settings, system, user, cancel, on_text, on_model),
+        "ollama" => {
+            on_model(&settings.model);
+            ollama(settings, system, user, cancel, on_text)
+        }
         other => Err(anyhow!("지원하지 않는 제공자: {other}")),
     }
 }

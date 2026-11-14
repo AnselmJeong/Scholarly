@@ -19,7 +19,7 @@ Rust + GPUI Kit로 만든 macOS arm64 앱이다. Electron·Chromium·Node·Pytho
 
 ## 빌드와 실행
 
-현재 버전은 **0.10.3 (build 13)**이다. Rust 1.99.0, Python 3.11 이상, Xcode Command Line Tools가 필요하다. Typst 설치는 필요하지 않다. `Cargo.lock`을 포함한다. 저장소 루트에서:
+현재 버전은 **0.10.4 (build 14)**이다. Rust 1.99.0, Python 3.11 이상, Xcode Command Line Tools가 필요하다. Typst 설치는 필요하지 않다. `Cargo.lock`을 포함한다. 저장소 루트에서:
 
 ```sh
 cargo +1.99.0 test --manifest-path native/Cargo.toml
@@ -59,3 +59,5 @@ Codex·Claude 자격증명은 공식 CLI의 저장소를 그대로 사용한다.
 - 이미지의 의미를 새로 판독하거나 원문 표를 임의로 재입력하지 않는다. 정확한 Figure/Table 번호가 없는 문단에는 추측하여 그림을 연결하지 않고 노트 아래의 자료 목록에 둔다.
 - 원본 Electron DB와 네이티브 DB는 분리되며, 두 앱 사이의 이후 변경을 자동 병합하지 않는다.
 - 시스템 WebKit 프로세스를 사용한다. 앱 번들 크기는 실행 중 메모리 사용량이나 기동 시간과 다르며, 1초 기동·100ms 전환 목표는 별도 측정이 필요하다.
+
+0.10.4는 종이색/야간 읽기 화면, 수식 구분자 복구, 원문 표·그림 추출, 제공자별 모델 드롭다운과 작성 언어 표시를 개선했다. [검증 기록](../docs/evaluation/2026-11-14-reader-polish.md)을 참고한다.

@@ -69,6 +69,18 @@ pub(crate) fn run(pdf: &Path, directory: &Path) -> Result<()> {
 }
 pub(crate) fn arguments() -> Option<Result<()>> {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|a| a == "--list-models") {
+        return Some((|| {
+            let mut settings = Settings::load(&crate::library::app_home())?;
+            if let Some(provider) = args.get(2) {
+                settings.provider = provider.clone();
+            }
+            let models =
+                crate::provider::models(&settings, Arc::new(AtomicBool::new(false)), None)?;
+            println!("{}", serde_json::to_string_pretty(&models)?);
+            Ok(())
+        })());
+    }
     if args.get(1).is_some_and(|a| a == "--export-html") {
         return Some((|| {
             let pdf = PathBuf::from(args.get(2).context("--export-html <PDF> <HTML>")?);

@@ -32,7 +32,7 @@ struct Saved {
 
 pub(crate) fn extract(pdf: &Path, home: &Path) -> Result<Vec<Asset>> {
     let source_hash = hash(fs::read(pdf)?);
-    let directory = home.join("source-visuals-v2").join(&source_hash);
+    let directory = home.join("source-visuals-v3").join(&source_hash);
     let manifest = directory.join("manifest.json");
     if let Ok(data) = fs::read(&manifest)
         && let Ok(saved) = serde_json::from_slice::<Vec<Saved>>(&data)
@@ -67,7 +67,7 @@ pub(crate) fn extract(pdf: &Path, home: &Path) -> Result<Vec<Asset>> {
             || !visual
                 .number
                 .chars()
-                .all(|c| c.is_ascii_digit() || c == 'S')
+                .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
         {
             continue;
         }
@@ -108,11 +108,12 @@ pub(crate) fn extract(pdf: &Path, home: &Path) -> Result<Vec<Asset>> {
 /// Exact labels, including supplementary labels. Never pair Figure 1 with Table 1.
 pub(crate) fn references(text: &str) -> Vec<(String, String)> {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        let item = r"[sS]?\d+(?:[a-h])?(?:\s*[-–]\s*[sS]?\d+(?:[a-h])?)?";
+        let item = r"[A-Za-z]?\d+(?:[a-h])?(?:\s*[-–]\s*[A-Za-z]?\d+(?:[a-h])?)?";
         regex::Regex::new(&format!(r"(?i)(?:\b(fig(?:ure)?s?\.?|tables?)|\b(그림|표))\s*({item}(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|&)\s+|\s*(?:및|와|과)\s*){item})*)")).unwrap()
     });
     static ITEM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)([sS]?\d+)(?:[a-h])?(?:\s*[-–]\s*([sS]?\d+)(?:[a-h])?)?").unwrap()
+        regex::Regex::new(r"(?i)([A-Za-z]?\d+)(?:[a-h])?(?:\s*[-–]\s*([A-Za-z]?\d+)(?:[a-h])?)?")
+            .unwrap()
     });
     let mut found = Vec::new();
     for c in RE.captures_iter(text) {
@@ -131,13 +132,22 @@ pub(crate) fn references(text: &str) -> Vec<(String, String)> {
             let start = item[1].to_uppercase();
             found.push((kind.to_owned(), start.clone()));
             if let Some(end) = item.get(2) {
-                let prefix = if start.starts_with('S') { "S" } else { "" };
+                let prefix = if start.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                    &start[..1]
+                } else {
+                    ""
+                };
                 if let (Ok(a), Ok(b)) = (
-                    start.trim_start_matches('S').parse::<u32>(),
-                    end.as_str().trim_start_matches(['S', 's']).parse::<u32>(),
+                    start
+                        .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+                        .parse::<u32>(),
+                    end.as_str()
+                        .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+                        .parse::<u32>(),
                 ) && b > a
                     && b - a < 20
-                    && (!end.as_str().to_uppercase().starts_with('S') || prefix == "S")
+                    && (!end.as_str().starts_with(|c: char| c.is_ascii_alphabetic())
+                        || end.as_str()[..1].eq_ignore_ascii_case(prefix))
                 {
                     for n in a + 1..=b {
                         found.push((kind.into(), format!("{prefix}{n}")));

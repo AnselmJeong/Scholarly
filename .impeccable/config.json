@@ -2,16 +2,6 @@
   "detector": {
     "ignoreRules": [],
     "ignoreFiles": [],
-    "ignoreValues": [
-      {
-        "rule": "side-tab",
-        "value": "*",
-        "files": [
-          "native/assets/reader/reader.css"
-        ],
-        "createdAt": "2026-11-13T23:06:57.932Z",
-        "reason": "Agent review: line 8 is the conventional quotation rule on semantic blockquotes; line 15 groups original paper visuals and follows the vertical source marker in the user-provided DeepPaperNote reference. Preserve the requested incumbent reading design; these are not decorative card tabs."
-      }
-    ]
+    "ignoreValues": []
   }
 }

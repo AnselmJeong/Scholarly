@@ -98,6 +98,14 @@ func visualRegion(kind: String, anchor: CGRect, captionBottom: Double, captionRi
         // Cell-by-cell grids emit short segments: join contiguous collinear edges first.
         var segments: [CGRect] = []
         let tableEnd: CGFloat = min(after,0.935)
+        // Oxford and other publishers draw dotted table rules as text, not paths.
+        for line in all {
+            let dots=line.text.filter { !$0.isWhitespace }
+            let r=rectangle(line.rect)
+            if dots.count>12 && dots.allSatisfy({".·•…".contains($0)}) && r.minY>before && r.maxY<tableEnd {
+                segments.append(r)
+            }
+        }
         for mark in marks {
             let r=rectangle(mark.rect)
             if r.width>0.025 && r.height<0.004 && r.minY>before && r.maxY<tableEnd { segments.append(r) }
@@ -197,12 +205,21 @@ func visualRegion(kind: String, anchor: CGRect, captionBottom: Double, captionRi
 }
 func visuals(_ page: PDFPage, _ number: Int) -> [Visual] {
     let all = lines(page).sorted { $0.rect[1] < $1.rect[1] }
-    let pattern = try! NSRegularExpression(pattern: "^(Figure|Fig\\.|FIGURE|FIG\\.|Table|TABLE)\\s*([Ss]?\\d+)(?:\\s*[.:|–—]|$)(?:\\s|$)")
-    let anchors=all.filter {pattern.firstMatch(in:$0.text,range:NSRange($0.text.startIndex...,in:$0.text)) != nil}
+    let pattern = try! NSRegularExpression(pattern: "^(Figure|Fig\\.|FIGURE|FIG\\.|Table|TABLE)\\s*([A-Za-z]?\\d+)(?=\\s|[.:|–—]|$)")
+    let anchors=all.filter { line in
+        guard pattern.firstMatch(in:line.text,range:NSRange(line.text.startIndex...,in:line.text)) != nil else {return false}
+        let r=rectangle(line.rect)
+        // A wrapped body sentence beginning "Fig. 2: ..." is not a caption.
+        let preceding=all.filter { prior in
+            let p=rectangle(prior.rect)
+            return abs(p.minX-r.minX)<0.02 && p.maxY<=r.minY+0.002 && r.minY-p.maxY<0.012 && prior.text.count>45 && p.width>0.28
+        }
+        return preceding.isEmpty
+    }
     if anchors.isEmpty {return []}
     let marks=drawings(page)
     var found: [Visual] = []
-    for line in all {
+    for line in anchors {
         guard let match = pattern.firstMatch(in: line.text, range: NSRange(line.text.startIndex..., in: line.text)),
               let kindRange = Range(match.range(at: 1), in: line.text), let numberRange = Range(match.range(at: 2), in: line.text) else { continue }
         let kind = line.text[kindRange].lowercased().hasPrefix("tab") ? "table" : "figure"
@@ -234,6 +251,8 @@ func visuals(_ page: PDFPage, _ number: Int) -> [Visual] {
             let r=region.intersection(CGRect(x:0,y:0,width:1,height:1))
             if r.width*r.height<0.88 {rect=[r.minX,r.minY,r.width,r.height];cropped=true}
         }
+        // A prose reference without any nearby visual is not a missing image.
+        if !cropped && line.text.range(of: "^(?:Figure|Fig\\.|Table)\\s*[A-Za-z]?\\d+\\s+(?:illustrates|shows|summarizes|demonstrates|presents|provides|compares|reports)\\b", options: [.regularExpression,.caseInsensitive]) != nil {continue}
         if !found.contains(where: { $0.kind == kind && $0.number == labelNumber }) {
             found.append(Visual(label: "\(kind == "table" ? "Table" : "Figure") \(labelNumber)", kind:kind, number:labelNumber, page:number, caption:caption, rect:rect, cropped:cropped))
         }
